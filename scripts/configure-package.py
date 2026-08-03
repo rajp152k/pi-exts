@@ -17,7 +17,9 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.name and not VALID_EXTENSION_NAME.fullmatch(args.name):
-        parser.error("extension names must contain only lowercase letters, digits, and hyphens")
+        parser.error(
+            "extension names must contain only lowercase letters, digits, and hyphens"
+        )
 
     try:
         settings = json.loads(SETTINGS_PATH.read_text())
@@ -28,7 +30,8 @@ def main() -> None:
     packages = [
         package
         for package in packages
-        if package != args.source and not (isinstance(package, dict) and package.get("source") == args.source)
+        if package != args.source
+        and not (isinstance(package, dict) and package.get("source") == args.source)
     ]
 
     if args.name:

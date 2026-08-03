@@ -39,7 +39,10 @@ async function sendReadyNotification(pi: ExtensionAPI): Promise<boolean> {
 	if (!process.env.TMUX || !process.env.TMUX_PANE) return false;
 
 	const location = await getTmuxLocation(pi);
-	notifyGhostty("Pi", location ? `Ready for input — ${location}` : "Ready for input");
+	notifyGhostty(
+		"Pi",
+		location ? `Ready for input — ${location}` : "Ready for input",
+	);
 	return true;
 }
 
@@ -50,7 +53,7 @@ export default function (pi: ExtensionAPI) {
 			if (ctx.mode !== "tui") return;
 
 			try {
-				if (!await sendReadyNotification(pi)) {
+				if (!(await sendReadyNotification(pi))) {
 					ctx.ui.notify("rp152kpi:notify requires tmux", "warning");
 				}
 			} catch {

@@ -21,3 +21,15 @@ just all
 ```
 
 Both commands install the GitHub package with `pi install git:github.com/rajp152k/pi-exts`. The single-extension command then configures Pi to load only that extension.
+
+Update one installed extension:
+
+```bash
+just update notify
+```
+
+Update every installed extension:
+
+```bash
+just update-all
+```

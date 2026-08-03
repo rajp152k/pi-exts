@@ -14,3 +14,14 @@ install name:
 all:
     pi install "{{repo_source}}"
     python3 scripts/configure-package.py "{{repo_source}}"
+
+# Update one installed extension by its non-namespaced name.
+update name:
+    test -f "extensions/rp152kpi:{{name}}/index.ts"
+    pi update --extension "{{repo_source}}"
+    python3 scripts/configure-package.py "{{repo_source}}" "{{name}}"
+
+# Update every installed extension in this package.
+update-all:
+    pi update --extension "{{repo_source}}"
+    python3 scripts/configure-package.py "{{repo_source}}"
