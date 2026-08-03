@@ -7,7 +7,11 @@ export const configPath = resolve(integrationRoot, "config", "mcporter.json");
 const mcporterBin = process.env.MCPORTER_BIN || "mcporter";
 
 export async function mcporter(args, options = {}) {
-	const result = await run(mcporterBin, ["--config", configPath, ...args], options);
+	const result = await run(
+		mcporterBin,
+		["--config", configPath, ...args],
+		options,
+	);
 	return requireSuccess(result, `mcporter ${args[0] ?? ""}`.trim());
 }
 

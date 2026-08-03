@@ -2,7 +2,7 @@
 
 ## Status
 
-**Planning only.** No Firefox integration has been implemented yet.
+**Foundation implemented and live-tested.** The package resources, Firefox launcher, pinned MCPorter/Mozilla MCP configuration, `firefoxctl`, Pi extension, Pi skill, artifact baseline, and a real-Firefox smoke test are implemented. The visual-geometry/mutation-consistency layer, richer actions, and expanded fixture suite remain planned work.
 
 ## Goal
 
@@ -262,7 +262,7 @@ Mozilla's snapshot output is a semantic DOM representation, not a complete brows
 It writes a single observation artifact:
 
 ```text
-~/.cache/rp152kpi/firefox/<pi-session>/<observation-id>/
+~/.firefox-devtools-mcp/rp152kpi/<observation-id>/
 ├── observation.json
 ├── snapshot.txt
 └── viewport.png

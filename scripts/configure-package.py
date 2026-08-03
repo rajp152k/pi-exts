@@ -41,7 +41,9 @@ def resource_filters(bundle: dict[str, list[str]]) -> dict[str, list[str]]:
     }
 
 
-def local_extension_names(resources: dict[str, dict[str, list[str]]], bundle_name: str | None) -> set[str]:
+def local_extension_names(
+    resources: dict[str, dict[str, list[str]]], bundle_name: str | None
+) -> set[str]:
     bundles = [resources[bundle_name]] if bundle_name else resources.values()
     names: set[str] = set()
     for bundle in bundles:
@@ -69,7 +71,9 @@ def merge_filters(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("source", help="Pi package source, such as git:github.com/user/repo")
+    parser.add_argument(
+        "source", help="Pi package source, such as git:github.com/user/repo"
+    )
     parser.add_argument("bundle", nargs="?", help="Bundle name from resources.json")
     args = parser.parse_args()
 
@@ -84,7 +88,9 @@ def main() -> None:
 
     if args.bundle:
         if not VALID_BUNDLE_NAME.fullmatch(args.bundle):
-            parser.error("bundle names must contain only lowercase letters, digits, and hyphens")
+            parser.error(
+                "bundle names must contain only lowercase letters, digits, and hyphens"
+            )
         if args.bundle not in resources:
             parser.error(f"unknown bundle: {args.bundle}")
         bundle = resources[args.bundle]

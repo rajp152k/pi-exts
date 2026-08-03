@@ -21,6 +21,7 @@ This uses the normal Firefox profile and makes `navigator.webdriver` true while 
 ```bash
 just firefox-doctor
 just firefox-tabs
+just test-firefox
 ```
 
 `firefoxctl doctor` requires Firefox to have been launched with both Marionette and remote debugging enabled. It intentionally fails against an ordinary already-running Firefox.
@@ -32,3 +33,5 @@ node integrations/firefox/bin/firefoxctl.mjs --help
 ```
 
 The wrapper uses the pinned `@mozilla/firefox-devtools-mcp@0.9.15` process through MCPorter. It scopes browser actions to an explicit tab index and serializes multi-call operations with a local lock.
+
+`just test-firefox` opens a disposable local fixture page, performs observe/fill/click/evaluate operations, and closes its test tab.

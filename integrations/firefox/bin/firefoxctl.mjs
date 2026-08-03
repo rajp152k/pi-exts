@@ -3,7 +3,12 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { callFirefox, firefoxStatus, mcporter, restartDaemon } from "../lib/mcporter.mjs";
+import {
+	callFirefox,
+	firefoxStatus,
+	mcporter,
+	restartDaemon,
+} from "../lib/mcporter.mjs";
 import { withFirefoxLock } from "../lib/lock.mjs";
 
 function usage() {
@@ -52,9 +57,8 @@ async function withSelectedTab(index, work) {
 }
 
 function artifactDirectory() {
-	const cacheRoot = process.env.XDG_CACHE_HOME || join(homedir(), ".cache");
 	const observationId = `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`;
-	return join(cacheRoot, "rp152kpi", "firefox", observationId);
+	return join(homedir(), ".firefox-devtools-mcp", "rp152kpi", observationId);
 }
 
 async function doctor() {
@@ -82,8 +86,12 @@ async function observe(index) {
 	const metadataPath = join(directory, "observation.json");
 
 	await withSelectedTab(index, async () => {
-		const snapshot = await callFirefox("take_snapshot", [`saveTo=${snapshotPath}`]);
-		const screenshot = await callFirefox("screenshot_page", [`saveTo=${screenshotPath}`]);
+		const snapshot = await callFirefox("take_snapshot", [
+			`saveTo=${snapshotPath}`,
+		]);
+		const screenshot = await callFirefox("screenshot_page", [
+			`saveTo=${screenshotPath}`,
+		]);
 		await writeFile(
 			metadataPath,
 			`${JSON.stringify(
@@ -119,8 +127,10 @@ async function main(argv) {
 	}
 
 	if (command === "doctor") return doctor();
-	if (command === "tools") return print(await mcporter(["list", "firefox", "--json"]));
-	if (command === "daemon" && args[0] === "restart") return print(await restartDaemon());
+	if (command === "tools")
+		return print(await mcporter(["list", "firefox", "--json"]));
+	if (command === "daemon" && args[0] === "restart")
+		return print(await restartDaemon());
 	if (command === "raw") {
 		const [tool, ...toolArguments] = args;
 		if (!tool) throw new Error("raw requires an MCP tool name");
@@ -130,28 +140,44 @@ async function main(argv) {
 	if (command === "tabs") {
 		const [action, value] = args;
 		if (action === "list") return print(await callFirefox("list_pages"));
-		if (action === "open" && value) return print(await callFirefox("new_page", [`url=${value}`]));
+		if (action === "open" && value)
+			return print(await callFirefox("new_page", [`url=${value}`]));
 		if (action === "close" && value) {
-			return withFirefoxLock(async () => print(await callFirefox("close_page", [`pageIdx=${parseIndex(value)}`])));
+			return withFirefoxLock(async () =>
+				print(
+					await callFirefox("close_page", [`pageIdx=${parseIndex(value)}`]),
+				),
+			);
 		}
 		if (action === "select" && value) {
-			return withFirefoxLock(async () => print(await callFirefox("select_page", [`pageIdx=${parseIndex(value)}`])));
+			return withFirefoxLock(async () =>
+				print(
+					await callFirefox("select_page", [`pageIdx=${parseIndex(value)}`]),
+				),
+			);
 		}
-		throw new Error("tabs expects list, open <url>, close <index>, or select <index>");
+		throw new Error(
+			"tabs expects list, open <url>, close <index>, or select <index>",
+		);
 	}
 
 	if (command === "navigate") {
 		const [index, url] = args;
 		if (!index || !url) throw new Error("navigate requires <index> <url>");
-		return withSelectedTab(parseIndex(index), async () => print(await callFirefox("navigate_page", [`url=${url}`])));
+		return withSelectedTab(parseIndex(index), async () =>
+			print(await callFirefox("navigate_page", [`url=${url}`])),
+		);
 	}
 
 	if (command === "snapshot" || command === "screenshot") {
 		const [index, flag, savePath] = args;
 		if (!index) throw new Error(`${command} requires <index>`);
 		const tool = command === "snapshot" ? "take_snapshot" : "screenshot_page";
-		const toolArguments = flag === "--save" && savePath ? [`saveTo=${savePath}`] : [];
-		return withSelectedTab(parseIndex(index), async () => print(await callFirefox(tool, toolArguments)));
+		const toolArguments =
+			flag === "--save" && savePath ? [`saveTo=${savePath}`] : [];
+		return withSelectedTab(parseIndex(index), async () =>
+			print(await callFirefox(tool, toolArguments)),
+		);
 	}
 
 	if (command === "observe") {
@@ -163,29 +189,42 @@ async function main(argv) {
 	if (command === "click") {
 		const [index, uid] = args;
 		if (!index || !uid) throw new Error("click requires <index> <uid>");
-		return withSelectedTab(parseIndex(index), async () => print(await callFirefox("click_by_uid", [`uid=${uid}`])));
+		return withSelectedTab(parseIndex(index), async () =>
+			print(await callFirefox("click_by_uid", [`uid=${uid}`])),
+		);
 	}
 
 	if (command === "fill") {
 		const [index, uid, text] = args;
-		if (!index || !uid || text === undefined) throw new Error("fill requires <index> <uid> <text>");
-		return withSelectedTab(parseIndex(index), async () => print(await callFirefox("fill_by_uid", [`uid=${uid}`, `value=${text}`])));
+		if (!index || !uid || text === undefined)
+			throw new Error("fill requires <index> <uid> <text>");
+		return withSelectedTab(parseIndex(index), async () =>
+			print(await callFirefox("fill_by_uid", [`uid=${uid}`, `value=${text}`])),
+		);
 	}
 
 	if (command === "eval") {
 		const [index, mode, value] = args;
 		if (!index || !mode || !value || !["--expr", "--file"].includes(mode)) {
-			throw new Error("eval requires <index> (--expr <function> | --file <path>)");
+			throw new Error(
+				"eval requires <index> (--expr <function> | --file <path>)",
+			);
 		}
-		const functionArgument = mode === "--file" ? `function=@${value}` : `function=${value}`;
-		return withSelectedTab(parseIndex(index), async () => print(await callFirefox("evaluate_script", [functionArgument])));
+		const functionArgument =
+			mode === "--file" ? `function=@${value}` : `function=${value}`;
+		return withSelectedTab(parseIndex(index), async () =>
+			print(await callFirefox("evaluate_script", [functionArgument])),
+		);
 	}
 
 	if (command === "network" || command === "console") {
 		const [index] = args;
 		if (!index) throw new Error(`${command} requires <index>`);
-		const tool = command === "network" ? "list_network_requests" : "list_console_messages";
-		return withSelectedTab(parseIndex(index), async () => print(await callFirefox(tool)));
+		const tool =
+			command === "network" ? "list_network_requests" : "list_console_messages";
+		return withSelectedTab(parseIndex(index), async () =>
+			print(await callFirefox(tool)),
+		);
 	}
 
 	throw new Error(`unknown command: ${command}`);

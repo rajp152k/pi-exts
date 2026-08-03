@@ -36,3 +36,7 @@ firefox-doctor:
 # List live Firefox tabs through the persistent MCP connection.
 firefox-tabs:
     {{firefoxctl}} tabs list
+
+# Run the opt-in live Firefox smoke test against a local fixture page.
+test-firefox:
+    node integrations/firefox/test/smoke.mjs

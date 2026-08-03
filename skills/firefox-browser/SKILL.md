@@ -60,7 +60,7 @@ The evaluated source must be a JavaScript function expression. Keep results boun
 
 ## Artifacts
 
-`observe` writes a directory under `~/.cache/rp152kpi/firefox/`. Its `observation.json` identifies the screenshot and snapshot artifact paths. Do not paste large artifact contents into messages; inspect the exact files needed.
+`observe` writes a directory under `~/.firefox-devtools-mcp/rp152kpi/`, which is the Mozilla MCP server's allowed artifact location. Its `observation.json` identifies the screenshot and snapshot artifact paths. Do not paste large artifact contents into messages; inspect the exact files needed.
 
 ## Recovery
 

@@ -1,6 +1,9 @@
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 
 const extensionDirectory = dirname(fileURLToPath(import.meta.url));
 const firefoxctl = resolve(
@@ -10,7 +13,9 @@ const firefoxctl = resolve(
 
 async function updateStatus(pi: ExtensionAPI, ctx: ExtensionContext) {
 	try {
-		const result = await pi.exec("node", [firefoxctl, "doctor"], { timeout: 10_000 });
+		const result = await pi.exec("node", [firefoxctl, "doctor"], {
+			timeout: 10_000,
+		});
 		ctx.ui.setStatus(
 			"rp152kpi:firefox",
 			result.code === 0 ? "Firefox: connected" : "Firefox: unavailable",
@@ -37,7 +42,11 @@ export default function (pi: ExtensionAPI) {
 		description: "Restart the persistent Firefox MCP connection",
 		handler: async (_args, ctx) => {
 			try {
-				const result = await pi.exec("node", [firefoxctl, "daemon", "restart"], { timeout: 15_000 });
+				const result = await pi.exec(
+					"node",
+					[firefoxctl, "daemon", "restart"],
+					{ timeout: 15_000 },
+				);
 				if (result.code !== 0) throw new Error("daemon restart failed");
 				await updateStatus(pi, ctx);
 				ctx.ui.notify("Firefox MCP connection restarted", "info");

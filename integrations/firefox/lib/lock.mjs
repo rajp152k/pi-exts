@@ -28,7 +28,10 @@ export async function withFirefoxLock(work, { timeout = 30_000 } = {}) {
 		try {
 			const handle = await open(lockPath, "wx");
 			try {
-				await writeFile(handle, JSON.stringify({ pid: process.pid, createdAt: Date.now() }));
+				await writeFile(
+					handle,
+					JSON.stringify({ pid: process.pid, createdAt: Date.now() }),
+				);
 				return await work();
 			} finally {
 				await handle.close();
