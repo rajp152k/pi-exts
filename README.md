@@ -2,6 +2,10 @@
 
 Personal Pi extensions, organized under the `rp152kpi:<name>` namespace.
 
+## Plans
+
+- [Firefox browser-agent integration](plans/firefox-browser-agent.md)
+
 ## Extensions
 
 - [`rp152kpi:notify`](extensions/rp152kpi:notify): shows a top-right tmux popup when Pi is ready for the next prompt.
