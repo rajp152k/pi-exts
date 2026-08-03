@@ -48,6 +48,24 @@ def main() -> None:
         packages.append(args.source)
 
     settings["packages"] = packages
+
+    managed_names = {f"rp152kpi:{args.name}"} if args.name else None
+    extensions = settings.get("extensions", [])
+    remaining_extensions = [
+        extension
+        for extension in extensions
+        if not (
+            isinstance(extension, str)
+            and extension.startswith("/")
+            and Path(extension).name.startswith("rp152kpi:")
+            and (managed_names is None or Path(extension).name in managed_names)
+        )
+    ]
+    if remaining_extensions:
+        settings["extensions"] = remaining_extensions
+    else:
+        settings.pop("extensions", None)
+
     SETTINGS_PATH.write_text(json.dumps(settings, indent=2) + "\n")
 
 
