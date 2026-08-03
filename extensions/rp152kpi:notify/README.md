@@ -15,14 +15,10 @@ The notification subtitle identifies the current tmux session and window as `ses
 
 ## Install
 
-Register this directory in `~/.pi/agent/settings.json`:
+From a clone of [`rajp152k/pi-exts`](https://github.com/rajp152k/pi-exts):
 
-```json
-{
-  "extensions": [
-    "/absolute/path/to/pi-exts/extensions/rp152kpi:notify"
-  ]
-}
+```bash
+just install notify
 ```
 
-Restart Pi after changing global settings.
+This installs the package globally with Pi and configures it to load only `rp152kpi:notify`. Restart Pi after installation.

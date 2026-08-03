@@ -1,0 +1,8 @@
+{
+  "name": "rp152kpi-extensions",
+  "private": true,
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./extensions/*/index.ts"]
+  }
+}
