@@ -35,17 +35,35 @@ async function getTmuxLocation(pi: ExtensionAPI): Promise<string | undefined> {
 	return location || undefined;
 }
 
+async function sendReadyNotification(pi: ExtensionAPI): Promise<boolean> {
+	if (!process.env.TMUX || !process.env.TMUX_PANE) return false;
+
+	const location = await getTmuxLocation(pi);
+	notifyGhostty("Pi", location ? `Ready for input — ${location}` : "Ready for input");
+	return true;
+}
+
 export default function (pi: ExtensionAPI) {
+	pi.registerCommand("notify-test", {
+		description: "Send a Ghostty notification through tmux",
+		handler: async (_args, ctx) => {
+			if (ctx.mode !== "tui") return;
+
+			try {
+				if (!await sendReadyNotification(pi)) {
+					ctx.ui.notify("rp152kpi:notify requires tmux", "warning");
+				}
+			} catch {
+				ctx.ui.notify("Could not send Ghostty notification", "error");
+			}
+		},
+	});
+
 	pi.on("agent_settled", async (_event, ctx) => {
-		if (ctx.mode !== "tui" || !process.env.TMUX || !process.env.TMUX_PANE)
-			return;
+		if (ctx.mode !== "tui") return;
 
 		try {
-			const location = await getTmuxLocation(pi);
-			notifyGhostty(
-				"Pi",
-				location ? `Ready for input — ${location}` : "Ready for input",
-			);
+			await sendReadyNotification(pi);
 		} catch {
 			// Notifications must never interfere with the completed agent run.
 		}
