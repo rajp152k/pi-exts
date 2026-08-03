@@ -4,7 +4,7 @@ Personal Pi extensions, organized under the `rp152kpi:<name>` namespace.
 
 ## Extensions
 
-- [`rp152kpi:notify`](extensions/rp152kpi:notify): sends a Ghostty notification through tmux when Pi is ready for the next prompt.
+- [`rp152kpi:notify`](extensions/rp152kpi:notify): shows a top-right tmux popup when Pi is ready for the next prompt.
 
 ## Install
 

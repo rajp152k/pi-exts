@@ -1,17 +1,12 @@
 # rp152kpi:notify
 
-Sends a Ghostty desktop notification when Pi has fully settled and is ready for the next prompt.
+Shows a short-lived tmux popup in the top-right corner when Pi has fully settled and is ready for the next prompt.
 
-The notification subtitle identifies the current tmux session and window as `session:index.window`.
+The popup identifies the current tmux session and window as `session:index.window`.
 
 ## Requirements
 
-- Ghostty
-- tmux with passthrough enabled:
-
-  ```tmux
-  set -g allow-passthrough on
-  ```
+- tmux 3.2 or later (`display-popup` support)
 
 ## Install
 

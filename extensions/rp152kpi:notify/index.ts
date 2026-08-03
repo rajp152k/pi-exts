@@ -11,9 +11,35 @@ function sanitizeNotificationText(value: string): string {
 		.slice(0, MAX_NOTIFICATION_TEXT_LENGTH);
 }
 
-function notifyGhostty(title: string): void {
-	// tmux passthrough wrapping Ghostty's OSC 9 notification sequence.
-	process.stdout.write(`\x1bPtmux;\x1b\x1b]9;${title}\x1b\x1b\\\x1b\\`);
+async function showTmuxPopup(
+	pi: ExtensionAPI,
+	pane: string,
+	message: string,
+): Promise<void> {
+	const result = await pi.exec(
+		"tmux",
+		[
+			"display-popup",
+			"-t",
+			pane,
+			"-E",
+			"-w",
+			"50",
+			"-h",
+			"5",
+			"-x",
+			"R",
+			"-y",
+			"0",
+			"-T",
+			"Pi",
+			"-e",
+			`RP152KPI_NOTIFY_MESSAGE=${message}`,
+			"printf '%s\\n' \"$RP152KPI_NOTIFY_MESSAGE\"; sleep 4",
+		],
+		{ timeout: 1_000 },
+	);
+	if (result.code !== 0) throw new Error(result.stderr);
 }
 
 async function getTmuxLocation(pi: ExtensionAPI): Promise<string | undefined> {
@@ -34,19 +60,18 @@ async function getTmuxLocation(pi: ExtensionAPI): Promise<string | undefined> {
 }
 
 async function sendReadyNotification(pi: ExtensionAPI): Promise<boolean> {
-	if (!process.env.TMUX || !process.env.TMUX_PANE) return false;
+	const pane = process.env.TMUX_PANE;
+	if (!process.env.TMUX || !pane) return false;
 
 	const location = await getTmuxLocation(pi);
-	const title = location
-		? `Pi — Ready for input — ${location}`
-		: "Pi — Ready for input";
-	notifyGhostty(sanitizeNotificationText(title));
+	const message = location ? `Ready for input — ${location}` : "Ready for input";
+	await showTmuxPopup(pi, pane, sanitizeNotificationText(message));
 	return true;
 }
 
 export default function (pi: ExtensionAPI) {
 	pi.registerCommand("notify-test", {
-		description: "Send a Ghostty notification through tmux",
+		description: "Show a tmux notification popup",
 		handler: async (_args, ctx) => {
 			if (ctx.mode !== "tui") return;
 
