@@ -3,6 +3,7 @@
   "private": true,
   "keywords": ["pi-package"],
   "pi": {
-    "extensions": ["./extensions/*/index.ts"]
+    "extensions": ["./extensions/*/index.ts"],
+    "skills": ["./skills/*/SKILL.md"]
   }
 }

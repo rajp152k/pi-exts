@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+firefox_bin="${FIREFOX_BIN:-/Applications/Firefox.app/Contents/MacOS/firefox}"
+
+if [[ ! -x "$firefox_bin" ]]; then
+  printf 'Firefox binary not found: %s\n' "$firefox_bin" >&2
+  exit 1
+fi
+
+if pgrep -x firefox >/dev/null 2>&1; then
+  printf 'Quit Firefox before starting automation-enabled Firefox.\n' >&2
+  exit 1
+fi
+
+exec "$firefox_bin" --marionette --remote-debugging-port 9222 "$@"

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://raw.githubusercontent.com/openclaw/mcporter/main/mcporter.schema.json",
+  "imports": [],
+  "mcpServers": {
+    "firefox": {
+      "command": "npx",
+      "args": [
+        "--yes",
+        "@mozilla/firefox-devtools-mcp@0.9.15",
+        "--connect-existing",
+        "--marionette-port",
+        "2828",
+        "--tool-preset",
+        "developer"
+      ],
+      "lifecycle": "keep-alive"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "notify": {
+    "extensions": ["extensions/rp152kpi:notify/index.ts"]
+  },
+  "firefox": {
+    "extensions": ["extensions/rp152kpi:firefox/index.ts"],
+    "skills": ["skills/firefox-browser/SKILL.md"]
+  }
+}

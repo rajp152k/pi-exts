@@ -1,0 +1,13 @@
+{
+  "name": "rp152kpi-firefox",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.83.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^7.0.2"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
