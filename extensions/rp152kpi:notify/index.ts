@@ -11,11 +11,9 @@ function sanitizeNotificationText(value: string): string {
 		.slice(0, MAX_NOTIFICATION_TEXT_LENGTH);
 }
 
-function notifyGhostty(title: string, body: string): void {
-	// tmux passthrough: ESC P tmux; ESC ESC ] ... BEL ESC \\
-	process.stdout.write(
-		`\x1bPtmux;\x1b\x1b]777;notify;${title};${body}\x07\x1b\\`,
-	);
+function notifyGhostty(title: string): void {
+	// tmux passthrough wrapping Ghostty's OSC 9 notification sequence.
+	process.stdout.write(`\x1bPtmux;\x1b\x1b]9;${title}\x1b\x1b\\\x1b\\`);
 }
 
 async function getTmuxLocation(pi: ExtensionAPI): Promise<string | undefined> {
@@ -39,10 +37,10 @@ async function sendReadyNotification(pi: ExtensionAPI): Promise<boolean> {
 	if (!process.env.TMUX || !process.env.TMUX_PANE) return false;
 
 	const location = await getTmuxLocation(pi);
-	notifyGhostty(
-		"Pi",
-		location ? `Ready for input — ${location}` : "Ready for input",
-	);
+	const title = location
+		? `Pi — Ready for input — ${location}`
+		: "Pi — Ready for input";
+	notifyGhostty(sanitizeNotificationText(title));
 	return true;
 }
 
