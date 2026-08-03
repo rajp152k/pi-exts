@@ -35,7 +35,7 @@ async function showTmuxPopup(
 			"Pi",
 			"-e",
 			`RP152KPI_NOTIFY_MESSAGE=${message}`,
-			"printf '%s\\n' \"$RP152KPI_NOTIFY_MESSAGE\"; sleep 4",
+			"printf '%s\\n\\nPress any key to dismiss.' \"$RP152KPI_NOTIFY_MESSAGE\"; old_stty=$(stty -g); trap 'stty \"$old_stty\"' EXIT HUP INT TERM; stty -icanon -echo min 1 time 0; dd bs=1 count=1 >/dev/null 2>&1;",
 		],
 		{ timeout: 1_000 },
 	);
@@ -64,7 +64,9 @@ async function sendReadyNotification(pi: ExtensionAPI): Promise<boolean> {
 	if (!process.env.TMUX || !pane) return false;
 
 	const location = await getTmuxLocation(pi);
-	const message = location ? `Ready for input — ${location}` : "Ready for input";
+	const message = location
+		? `Ready for input — ${location}`
+		: "Ready for input";
 	await showTmuxPopup(pi, pane, sanitizeNotificationText(message));
 	return true;
 }

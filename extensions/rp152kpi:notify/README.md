@@ -1,6 +1,6 @@
 # rp152kpi:notify
 
-Shows a short-lived tmux popup in the top-right corner when Pi has fully settled and is ready for the next prompt.
+Shows a top-right tmux popup when Pi has fully settled and is ready for the next prompt. The popup stays open until you press any key.
 
 The popup identifies the current tmux session and window as `session:index.window`.
 
