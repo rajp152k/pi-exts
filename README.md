@@ -43,7 +43,7 @@ just firefox-doctor
 
 See [the integration README](integrations/firefox/README.md) and the [implementation plan](plans/firefox-browser-agent.md) for operating details and limitations.
 
-Both commands install the GitHub package with `pi install git:github.com/rajp152k/pi-exts`. The single-extension command then configures Pi to load only that extension.
+Both commands install the GitHub package with `pi install git:github.com/rajp152k/pi-exts`. A named install enables that integration's resources while preserving resources enabled by earlier named installs.
 
 Update one installed extension:
 

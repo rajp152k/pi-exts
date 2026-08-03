@@ -52,6 +52,21 @@ def local_extension_names(resources: dict[str, dict[str, list[str]]], bundle_nam
     return names
 
 
+def merge_filters(
+    existing_packages: list[Any], bundle: dict[str, list[str]]
+) -> dict[str, list[str]]:
+    filters = resource_filters(bundle)
+    for package in existing_packages:
+        if not isinstance(package, dict):
+            continue
+        for kind in RESOURCE_KINDS:
+            previous = package.get(kind, [])
+            if not isinstance(previous, list):
+                continue
+            filters[kind] = list(dict.fromkeys([*previous, *filters[kind]]))
+    return filters
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("source", help="Pi package source, such as git:github.com/user/repo")
@@ -81,17 +96,20 @@ def main() -> None:
     packages = settings.get("packages", [])
     if not isinstance(packages, list):
         parser.error("Pi settings packages must be an array")
-    packages = [
+    existing_packages = [
         package
         for package in packages
-        if package != args.source
-        and not (isinstance(package, dict) and package.get("source") == args.source)
+        if package == args.source
+        or (isinstance(package, dict) and package.get("source") == args.source)
     ]
+    packages = [package for package in packages if package not in existing_packages]
 
-    if bundle is None:
+    if bundle is None or args.source in existing_packages:
         packages.append(args.source)
     else:
-        packages.append({"source": args.source, **resource_filters(bundle)})
+        packages.append(
+            {"source": args.source, **merge_filters(existing_packages, bundle)}
+        )
     settings["packages"] = packages
 
     managed_names = local_extension_names(resources, args.bundle)
