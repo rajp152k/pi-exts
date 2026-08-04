@@ -17,7 +17,7 @@ import {
 function usage() {
 	return `Usage:
   firefoxctl doctor
-  firefoxctl daemon restart
+  firefoxctl daemon start|status|stop|restart
   firefoxctl tools
   firefoxctl raw <tool> [key=value ...]
   firefoxctl tabs list|open <url>|close <index>|select <index>
@@ -159,8 +159,14 @@ async function main(argv) {
 	if (command === "doctor") return doctor();
 	if (command === "tools")
 		return print(await mcporter(["list", "firefox", "--json"]));
-	if (command === "daemon" && args[0] === "restart")
-		return print(await restartDaemon());
+	if (command === "daemon") {
+		const [action] = args;
+		if (!["start", "status", "stop", "restart"].includes(action)) {
+			throw new Error("daemon expects start, status, stop, or restart");
+		}
+		if (action === "restart") return print(await restartDaemon());
+		return print(await mcporter(["daemon", action]));
+	}
 	if (command === "raw") {
 		const [tool, ...toolArguments] = args;
 		if (!tool) throw new Error("raw requires an MCP tool name");

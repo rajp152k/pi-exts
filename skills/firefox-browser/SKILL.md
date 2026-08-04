@@ -16,6 +16,10 @@ firefoxctl doctor
 firefoxctl tabs list
 ```
 
+## Activation
+
+The Pi extension starts disabled and does not contact Firefox during Pi startup. Use `/firefox-on` when browser work is needed; use `/firefox-off` when finished. `/firefox-status` is passive and never starts MCPorter.
+
 ## Core workflow
 
 1. List tabs and select the explicit tab index to operate on.

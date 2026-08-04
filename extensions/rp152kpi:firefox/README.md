@@ -4,9 +4,13 @@ Thin Pi UI integration for the live Firefox browser-agent stack.
 
 It contributes:
 
-- `/firefox-status` to refresh connection status
+- `/firefox-on` to start MCPorter and connect to Firefox on demand
+- `/firefox-off` to stop MCPorter without closing Firefox
+- `/firefox-status` to inspect status without starting MCPorter
 - `/firefox-restart` to restart MCPorter's persistent Firefox transport
-- a footer indicator showing whether `firefoxctl doctor` can reach Firefox
+- a footer indicator that begins as `Firefox: off`
+
+It performs no Firefox or MCPorter work during Pi startup.
 
 Install the complete bundle from the repository root:
 
