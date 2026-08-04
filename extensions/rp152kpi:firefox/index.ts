@@ -34,9 +34,13 @@ async function startAndUpdateStatus({ extension, context }: StatusRequest) {
 
 async function updatePassiveStatus({ extension, context }: StatusRequest) {
 	try {
-		const result = await extension.exec("node", [firefoxctl, "daemon", "status"], {
-			timeout: 2_000,
-		});
+		const result = await extension.exec(
+			"node",
+			[firefoxctl, "daemon", "status"],
+			{
+				timeout: 2_000,
+			},
+		);
 		context.ui.setStatus(
 			"rp152kpi:firefox",
 			result.code === 0 && /firefox: connected/.test(result.stdout)
@@ -63,7 +67,9 @@ export default function (pi: ExtensionAPI) {
 				context: commandContext,
 			});
 			commandContext.ui.notify(
-				connected ? "Firefox MCP connection started" : "Could not connect to Firefox",
+				connected
+					? "Firefox MCP connection started"
+					: "Could not connect to Firefox",
 				connected ? "info" : "error",
 			);
 		},
