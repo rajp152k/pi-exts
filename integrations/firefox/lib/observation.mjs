@@ -165,18 +165,28 @@ function actionValidationScript(selector) {
 	}`;
 }
 
-export async function validateActionObservation({ callFirefox, observationPath, uid }) {
+export async function validateActionObservation({
+	callFirefox,
+	observationPath,
+	uid,
+}) {
 	let metadata;
 	try {
 		metadata = JSON.parse(await readFile(observationPath, "utf8"));
 	} catch (error) {
-		throw new Error(`cannot read observation ${observationPath}: ${error.message}`);
+		throw new Error(
+			`cannot read observation ${observationPath}: ${error.message}`,
+		);
 	}
 	if (metadata.schemaVersion < 3) {
-		throw new Error("observation lacks action-safety data; capture a fresh observation");
+		throw new Error(
+			"observation lacks action-safety data; capture a fresh observation",
+		);
 	}
 	if (metadata.document?.dirty) {
-		throw new Error("observation remained dirty after retry; capture a fresh observation before acting");
+		throw new Error(
+			"observation remained dirty after retry; capture a fresh observation before acting",
+		);
 	}
 	let geometry;
 	try {
@@ -186,7 +196,9 @@ export async function validateActionObservation({ callFirefox, observationPath, 
 	}
 	const expectedNode = geometry.nodes?.find((node) => node.uid === uid);
 	if (!expectedNode || expectedNode.missing) {
-		throw new Error(`UID ${uid} is not a usable node in observation ${metadata.observationId}`);
+		throw new Error(
+			`UID ${uid} is not a usable node in observation ${metadata.observationId}`,
+		);
 	}
 	const actual = responseJson(
 		await callFirefox("evaluate_script", [
@@ -207,7 +219,12 @@ export async function validateActionObservation({ callFirefox, observationPath, 
 	return metadata.observationId;
 }
 
-export async function createObservation({ callFirefox, directory, tabIndex, maxAttempts = 2 }) {
+export async function createObservation({
+	callFirefox,
+	directory,
+	tabIndex,
+	maxAttempts = 2,
+}) {
 	await mkdir(directory, { recursive: true });
 	const snapshotPath = join(directory, "snapshot.txt");
 	const screenshotPath = join(directory, "viewport.png");
@@ -222,15 +239,41 @@ export async function createObservation({ callFirefox, directory, tabIndex, maxA
 	for (; attempts < maxAttempts; attempts += 1) {
 		await writeFile(startPath, mutationScript("start"));
 		await writeFile(endPath, mutationScript("end"));
-		const mutationBefore = responseJson(await callFirefox("evaluate_script", [`function=@${startPath}`]), "mutation start");
-		const snapshot = await callFirefox("take_snapshot", [`saveTo=${snapshotPath}`]);
-		const screenshot = await callFirefox("screenshot_page", [`saveTo=${screenshotPath}`]);
-		const selectors = await resolveSelectors(callFirefox, snapshotUids(await readFile(snapshotPath, "utf8")));
+		const mutationBefore = responseJson(
+			await callFirefox("evaluate_script", [`function=@${startPath}`]),
+			"mutation start",
+		);
+		const snapshot = await callFirefox("take_snapshot", [
+			`saveTo=${snapshotPath}`,
+		]);
+		const screenshot = await callFirefox("screenshot_page", [
+			`saveTo=${screenshotPath}`,
+		]);
+		const selectors = await resolveSelectors(
+			callFirefox,
+			snapshotUids(await readFile(snapshotPath, "utf8")),
+		);
 		await writeFile(geometryFunctionPath, geometryScript(selectors));
-		const geometry = await callFirefox("evaluate_script", [`function=@${geometryFunctionPath}`, `saveTo=${geometryPath}`]);
-		const mutationAfter = responseJson(await callFirefox("evaluate_script", [`function=@${endPath}`]), "mutation end");
-		const dirty = mutationBefore.documentUrl !== mutationAfter.documentUrl || mutationAfter.mutationCount > 0;
-		capture = { mutationBefore, mutationAfter, snapshot, screenshot, geometry, selectors, dirty };
+		const geometry = await callFirefox("evaluate_script", [
+			`function=@${geometryFunctionPath}`,
+			`saveTo=${geometryPath}`,
+		]);
+		const mutationAfter = responseJson(
+			await callFirefox("evaluate_script", [`function=@${endPath}`]),
+			"mutation end",
+		);
+		const dirty =
+			mutationBefore.documentUrl !== mutationAfter.documentUrl ||
+			mutationAfter.mutationCount > 0;
+		capture = {
+			mutationBefore,
+			mutationAfter,
+			snapshot,
+			screenshot,
+			geometry,
+			selectors,
+			dirty,
+		};
 		if (!dirty) break;
 	}
 
@@ -258,5 +301,10 @@ export async function createObservation({ callFirefox, directory, tabIndex, maxA
 		geometryResult: responsePayload(capture.geometry, "geometry evaluation"),
 	};
 	await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
-	return { observationPath: metadataPath, snapshotPath, screenshotPath, geometryPath };
+	return {
+		observationPath: metadataPath,
+		snapshotPath,
+		screenshotPath,
+		geometryPath,
+	};
 }

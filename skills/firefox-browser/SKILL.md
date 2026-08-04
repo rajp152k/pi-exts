@@ -37,14 +37,29 @@ firefoxctl tabs list
 firefoxctl navigate <index> <url>
 firefoxctl observe <index>
 firefoxctl click <index> <uid> --observation <observation.json>
+firefoxctl hover <index> <uid> --observation <observation.json>
 firefoxctl fill <index> <uid> <text> --observation <observation.json>
+firefoxctl select <index> <uid> <value> --observation <observation.json>
+firefoxctl drag <index> <source-uid> <target-uid> --observation <observation.json>
+firefoxctl upload <index> <uid> <file> --observation <observation.json>
+firefoxctl scroll <index> <x> <y>
+firefoxctl key <index> Enter
+firefoxctl wait <index> selector '#ready' --timeout 10000
+firefoxctl wait <index> text 'Finished'
+firefoxctl wait <index> url '/account'
+firefoxctl wait <index> ready
+firefoxctl viewport <index> <width> <height>
+firefoxctl history <index> back
+firefoxctl downloads allow
+firefoxctl downloads list
+firefoxctl dialog accept
 firefoxctl eval <index> --file script.js
 firefoxctl screenshot <index> --save /tmp/page.png
 firefoxctl network <index>
 firefoxctl console <index>
 ```
 
-Use `firefoxctl raw <tool> key=value` only when the documented wrapper command does not expose a Mozilla Firefox MCP capability.
+`scroll`, `viewport`, and history navigation deliberately change page state: observe again before using UID actions. `key` dispatches synthetic DOM keyboard events to the focused page element; Firefox DevTools MCP 0.9.15 does not expose trusted native keyboard injection or cross-origin iframe targeting. Use `eval` or `raw` only when the documented wrapper does not expose a Mozilla capability.
 
 ## JavaScript
 

@@ -9,9 +9,11 @@ const integrationRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const firefoxctl = resolve(integrationRoot, "bin", "firefoxctl.mjs");
 const fixtureHtml = `<!doctype html>
 <title>Pi Firefox Fixture</title>
+<style>body { min-height: 2000px; }</style>
 <label>Name <input id="name" aria-label="Name"></label>
+<label>Choice <select id="choice"><option value="one">One</option><option value="two">Two</option></select></label>
 <button id="submit" onclick="document.querySelector('#result').textContent = document.querySelector('#name').value">Submit</button>
-<p id="result"></p>`;
+<p id="result"></p><script>document.addEventListener('keydown', event => { window.lastKey = event.key; })</script>`;
 const mutatingHtml = `${fixtureHtml}<script>setInterval(() => { document.querySelector('#result').textContent = Date.now(); }, 10)</script>`;
 
 async function firefox(...args) {
@@ -63,6 +65,26 @@ try {
 	);
 
 	await firefox(
+		"select",
+		tabIndex,
+		uid(snapshot, "select"),
+		"two",
+		"--observation",
+		observation.observationPath,
+	);
+	const selected = await firefox(
+		"eval",
+		tabIndex,
+		"--expr",
+		'() => document.querySelector("#choice").value',
+	);
+	assert.match(selected.stdout, /two/);
+	await firefox("wait", tabIndex, "selector", "#submit", "--timeout", "1000");
+	await firefox("scroll", tabIndex, "0", "100");
+	const scrollPosition = await firefox("eval", tabIndex, "--expr", "() => window.scrollY");
+	assert.match(scrollPosition.stdout, /100/);
+
+	await firefox(
 		"fill",
 		tabIndex,
 		inputUid,
@@ -99,6 +121,9 @@ try {
 		'() => document.querySelector("#result").textContent',
 	);
 	assert.match(result.stdout, /Agentic/);
+	await firefox("key", tabIndex, "K", "KeyK");
+	const keyResult = await firefox("eval", tabIndex, "--expr", "() => window.lastKey");
+	assert.match(keyResult.stdout, /K/);
 
 	mutatingTabIndex = pageIndex(await firefox("tabs", "open", `${url}mutating`));
 	const unstableObservation = JSON.parse(
@@ -107,9 +132,20 @@ try {
 	const unstableMetadata = JSON.parse(
 		await readFile(unstableObservation.observationPath, "utf8"),
 	);
-	assert.equal(unstableMetadata.capture.attempts, 2, "dirty captures retry once");
-	assert.equal(unstableMetadata.document.dirty, true, "mutating page stays dirty");
-	const unstableSnapshot = await readFile(unstableObservation.snapshotPath, "utf8");
+	assert.equal(
+		unstableMetadata.capture.attempts,
+		2,
+		"dirty captures retry once",
+	);
+	assert.equal(
+		unstableMetadata.document.dirty,
+		true,
+		"mutating page stays dirty",
+	);
+	const unstableSnapshot = await readFile(
+		unstableObservation.snapshotPath,
+		"utf8",
+	);
 	const dirtyAction = await run(
 		"node",
 		[
@@ -122,7 +158,11 @@ try {
 		],
 		{ timeout: 180_000 },
 	);
-	assert.notEqual(dirtyAction.code, 0, "dirty observations must reject actions");
+	assert.notEqual(
+		dirtyAction.code,
+		0,
+		"dirty observations must reject actions",
+	);
 	assert.match(dirtyAction.stderr, /remained dirty/);
 	await firefox("tabs", "close", mutatingTabIndex);
 	mutatingTabIndex = undefined;

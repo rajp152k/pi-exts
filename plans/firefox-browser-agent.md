@@ -2,7 +2,7 @@
 
 ## Status
 
-**Foundation and reliable visual/DOM observation baseline implemented and live-tested.** The package resources, Firefox launcher, pinned MCPorter/Mozilla MCP configuration, `firefoxctl`, Pi extension, Pi skill, artifact pipeline, UID-to-geometry mapping, mutation retry, action freshness checks, and a real-Firefox smoke test are implemented. Multi-frame/full-page geometry, richer actions, and an expanded fixture suite remain planned work.
+**Usable v1 implemented and live-tested.** The package resources, Firefox launcher, pinned MCPorter/Mozilla MCP configuration, `firefoxctl`, Pi extension, Pi skill, reliable observation/action pipeline, waits, common UID actions, navigation/history, synthetic keys, viewport/scroll, downloads, dialogs, and a real-Firefox smoke suite are implemented. Full-page/multi-frame geometry, trusted native keyboard injection, cross-origin iframe targeting, and an expanded fixture suite remain v1.1 work because Mozilla Firefox DevTools MCP 0.9.15 does not expose those primitives.
 
 ## Goal
 
@@ -377,8 +377,8 @@ firefoxctl → MCPorter daemon → Mozilla Firefox MCP → BiDi/Marionette → F
 3. Implement page listing, navigation, screenshot capture, and JavaScript evaluation.
 4. Add `firefox-browser` skill and `rp152kpi:firefox` connection status.
 5. Implement disk-backed composite observations.
-6. Add UID actions, waits, console/network/download artifacts, and stale-ref enforcement.
-7. Add fixture and real-browser integration suites.
+6. Add UID actions, waits, console/network/download artifacts, and stale-ref enforcement. **Done.**
+7. Add fixture and real-browser integration suites. **Baseline suite done; expand coverage from real failures.**
 
 ## References
 
