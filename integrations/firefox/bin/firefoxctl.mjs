@@ -65,7 +65,9 @@ function safetyOptions(args) {
 
 async function withFreshUids(index, uids, options, work) {
 	if (!options.force && !options.observationPath) {
-		throw new Error("a guarded action requires --observation <observation.json> (or explicit --force)");
+		throw new Error(
+			"a guarded action requires --observation <observation.json> (or explicit --force)",
+		);
 	}
 	return withSelectedTab(index, async () => {
 		if (!options.force) {
@@ -100,9 +102,11 @@ async function waitUntil(index, predicate, timeout) {
 	const deadline = Date.now() + timeout;
 	return withSelectedTab(index, async () => {
 		while (Date.now() < deadline) {
-			const result = await callFirefox("evaluate_script", [`function=${predicate}`]);
-			const text = parseJson(result.stdout, "wait evaluation").content
-				.filter((block) => block.type === "text")
+			const result = await callFirefox("evaluate_script", [
+				`function=${predicate}`,
+			]);
+			const text = parseJson(result.stdout, "wait evaluation")
+				.content.filter((block) => block.type === "text")
 				.map((block) => block.text)
 				.join("\n");
 			if (text.includes("```json\ntrue\n```")) return print(result);
@@ -216,14 +220,31 @@ async function main(argv) {
 		const [index, uid, value] = args;
 		const needsValue = ["fill", "upload", "select"].includes(command);
 		if (!index || !uid || (needsValue && value === undefined)) {
-			throw new Error(`${command} requires ${needsValue ? "<index> <uid> <value>" : "<index> <uid>"}`);
+			throw new Error(
+				`${command} requires ${needsValue ? "<index> <uid> <value>" : "<index> <uid>"}`,
+			);
 		}
-		return withFreshUids(parseIndex(index), [uid], safetyOptions(args), async () => {
-			if (command === "click") return print(await callFirefox("click_by_uid", [`uid=${uid}`]));
-			if (command === "hover") return print(await callFirefox("hover_by_uid", [`uid=${uid}`]));
-			if (command === "fill") return print(await callFirefox("fill_by_uid", [`uid=${uid}`, `value=${value}`]));
-			if (command === "upload") return print(await callFirefox("upload_file_by_uid", [`uid=${uid}`, `filePath=${value}`]));
-			const script = `(element) => {
+		return withFreshUids(
+			parseIndex(index),
+			[uid],
+			safetyOptions(args),
+			async () => {
+				if (command === "click")
+					return print(await callFirefox("click_by_uid", [`uid=${uid}`]));
+				if (command === "hover")
+					return print(await callFirefox("hover_by_uid", [`uid=${uid}`]));
+				if (command === "fill")
+					return print(
+						await callFirefox("fill_by_uid", [`uid=${uid}`, `value=${value}`]),
+					);
+				if (command === "upload")
+					return print(
+						await callFirefox("upload_file_by_uid", [
+							`uid=${uid}`,
+							`filePath=${value}`,
+						]),
+					);
+				const script = `(element) => {
 				if (!(element instanceof HTMLSelectElement)) throw new Error("target is not a select element");
 				element.value = ${JSON.stringify(value)};
 				if (element.value !== ${JSON.stringify(value)}) throw new Error("option value was not found");
@@ -231,23 +252,44 @@ async function main(argv) {
 				element.dispatchEvent(new Event("change", { bubbles: true }));
 				return { value: element.value };
 			}`;
-			return print(await callFirefox("evaluate_script", [`function=${script}`, `args=[{"uid":"${uid}"}]`]));
-		});
+				return print(
+					await callFirefox("evaluate_script", [
+						`function=${script}`,
+						`args=[{"uid":"${uid}"}]`,
+					]),
+				);
+			},
+		);
 	}
 
 	if (command === "drag") {
 		const [index, sourceUid, targetUid] = args;
-		if (!index || !sourceUid || !targetUid) throw new Error("drag requires <index> <source-uid> <target-uid>");
-		return withFreshUids(parseIndex(index), [sourceUid, targetUid], safetyOptions(args), async () =>
-			print(await callFirefox("drag_by_uid_to_uid", [`fromUid=${sourceUid}`, `toUid=${targetUid}`])),
+		if (!index || !sourceUid || !targetUid)
+			throw new Error("drag requires <index> <source-uid> <target-uid>");
+		return withFreshUids(
+			parseIndex(index),
+			[sourceUid, targetUid],
+			safetyOptions(args),
+			async () =>
+				print(
+					await callFirefox("drag_by_uid_to_uid", [
+						`fromUid=${sourceUid}`,
+						`toUid=${targetUid}`,
+					]),
+				),
 		);
 	}
 
 	if (command === "scroll") {
 		const [index, x, y] = args;
-		if (!index || x === undefined || y === undefined) throw new Error("scroll requires <index> <x> <y>");
+		if (!index || x === undefined || y === undefined)
+			throw new Error("scroll requires <index> <x> <y>");
 		return withSelectedTab(parseIndex(index), async () =>
-			print(await callFirefox("evaluate_script", [`function=() => { window.scrollTo(${Number(x)}, ${Number(y)}); return { x: window.scrollX, y: window.scrollY }; }`])),
+			print(
+				await callFirefox("evaluate_script", [
+					`function=() => { window.scrollTo(${Number(x)}, ${Number(y)}); return { x: window.scrollX, y: window.scrollY }; }`,
+				]),
+			),
 		);
 	}
 
@@ -269,10 +311,18 @@ async function main(argv) {
 		const [index, condition, value] = args;
 		const timeoutFlag = args.indexOf("--timeout");
 		const timeout = timeoutFlag === -1 ? 10_000 : Number(args[timeoutFlag + 1]);
-		if (!index || !["url", "text", "selector", "ready"].includes(condition) || !Number.isFinite(timeout) || timeout <= 0) {
-			throw new Error("wait requires <index> (url|text|selector|ready) [value] [--timeout <ms>]");
+		if (
+			!index ||
+			!["url", "text", "selector", "ready"].includes(condition) ||
+			!Number.isFinite(timeout) ||
+			timeout <= 0
+		) {
+			throw new Error(
+				"wait requires <index> (url|text|selector|ready) [value] [--timeout <ms>]",
+			);
 		}
-		if (condition !== "ready" && value === undefined) throw new Error(`wait ${condition} requires a value`);
+		if (condition !== "ready" && value === undefined)
+			throw new Error(`wait ${condition} requires a value`);
 		const predicates = {
 			url: `() => location.href.includes(${JSON.stringify(value)})`,
 			text: `() => document.body.innerText.includes(${JSON.stringify(value)})`,
@@ -284,15 +334,22 @@ async function main(argv) {
 
 	if (command === "viewport") {
 		const [index, width, height] = args;
-		if (!index || !width || !height) throw new Error("viewport requires <index> <width> <height>");
+		if (!index || !width || !height)
+			throw new Error("viewport requires <index> <width> <height>");
 		return withSelectedTab(parseIndex(index), async () =>
-			print(await callFirefox("set_viewport_size", [`width=${Number(width)}`, `height=${Number(height)}`])),
+			print(
+				await callFirefox("set_viewport_size", [
+					`width=${Number(width)}`,
+					`height=${Number(height)}`,
+				]),
+			),
 		);
 	}
 
 	if (command === "history") {
 		const [index, direction] = args;
-		if (!index || !["back", "forward"].includes(direction)) throw new Error("history requires <index> (back|forward)");
+		if (!index || !["back", "forward"].includes(direction))
+			throw new Error("history requires <index> (back|forward)");
 		return withSelectedTab(parseIndex(index), async () =>
 			print(await callFirefox("navigate_history", [`direction=${direction}`])),
 		);
@@ -302,14 +359,25 @@ async function main(argv) {
 		const [action = "list"] = args;
 		if (action === "list") return print(await callFirefox("list_downloads"));
 		if (action === "clear") return print(await callFirefox("clear_downloads"));
-		const behavior = { allow: "allowed", deny: "denied", default: "default" }[action];
-		if (behavior) return print(await callFirefox("set_download_behavior", [`behavior=${behavior}`]));
+		const behavior = { allow: "allowed", deny: "denied", default: "default" }[
+			action
+		];
+		if (behavior)
+			return print(
+				await callFirefox("set_download_behavior", [`behavior=${behavior}`]),
+			);
 		throw new Error("downloads expects list, clear, allow, deny, or default");
 	}
 
 	if (command === "dialog") {
 		const [action, promptText] = args;
-		if (action === "accept") return print(await callFirefox("accept_dialog", promptText === undefined ? [] : [`promptText=${promptText}`]));
+		if (action === "accept")
+			return print(
+				await callFirefox(
+					"accept_dialog",
+					promptText === undefined ? [] : [`promptText=${promptText}`],
+				),
+			);
 		if (action === "dismiss") return print(await callFirefox("dismiss_dialog"));
 		throw new Error("dialog expects accept [text] or dismiss");
 	}

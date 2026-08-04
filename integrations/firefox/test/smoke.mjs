@@ -81,7 +81,12 @@ try {
 	assert.match(selected.stdout, /two/);
 	await firefox("wait", tabIndex, "selector", "#submit", "--timeout", "1000");
 	await firefox("scroll", tabIndex, "0", "100");
-	const scrollPosition = await firefox("eval", tabIndex, "--expr", "() => window.scrollY");
+	const scrollPosition = await firefox(
+		"eval",
+		tabIndex,
+		"--expr",
+		"() => window.scrollY",
+	);
 	assert.match(scrollPosition.stdout, /100/);
 
 	await firefox(
@@ -122,7 +127,12 @@ try {
 	);
 	assert.match(result.stdout, /Agentic/);
 	await firefox("key", tabIndex, "K", "KeyK");
-	const keyResult = await firefox("eval", tabIndex, "--expr", "() => window.lastKey");
+	const keyResult = await firefox(
+		"eval",
+		tabIndex,
+		"--expr",
+		"() => window.lastKey",
+	);
 	assert.match(keyResult.stdout, /K/);
 
 	mutatingTabIndex = pageIndex(await firefox("tabs", "open", `${url}mutating`));
