@@ -35,7 +35,9 @@ const server = createServer((_request, response) => {
 	response.end(fixtureHtml);
 });
 
-await new Promise((resolveServer) => server.listen(0, "127.0.0.1", resolveServer));
+await new Promise((resolveServer) =>
+	server.listen(0, "127.0.0.1", resolveServer),
+);
 const address = server.address();
 assert.ok(address && typeof address !== "string");
 const url = `http://127.0.0.1:${address.port}/`;
@@ -46,8 +48,13 @@ try {
 	tabIndex = pageIndex(await firefox("tabs", "open", url));
 	const observation = JSON.parse((await firefox("observe", tabIndex)).stdout);
 	const snapshot = await readFile(observation.snapshotPath, "utf8");
+	const inputUid = uid(snapshot, "input");
+	const geometry = JSON.parse(await readFile(observation.geometryPath, "utf8"));
+	const inputNode = geometry.nodes.find((node) => node.uid === inputUid);
+	assert.ok(inputNode && !inputNode.missing, "input should have visual geometry");
+	assert.ok(inputNode.rectScreenshot.width > 0, "input should map to screenshot pixels");
 
-	await firefox("fill", tabIndex, uid(snapshot, "input"), "Agentic");
+	await firefox("fill", tabIndex, inputUid, "Agentic");
 	await firefox("click", tabIndex, uid(snapshot, 'button "Submit"'));
 	const result = await firefox(
 		"eval",

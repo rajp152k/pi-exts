@@ -25,9 +25,10 @@ firefoxctl tabs list
    node integrations/firefox/bin/firefoxctl.mjs observe 0
    ```
 
-3. Read `snapshot.txt` for semantic state and use Pi's `read` tool on `viewport.png` for visual state.
-4. Use snapshot UIDs with `click` and `fill`.
-5. Re-observe after navigation or mutations. Do not reuse stale UIDs.
+3. Read `snapshot.txt` for semantic state, `geometry.json` for UID-to-rectangle/image mappings, and use Pi's `read` tool on `viewport.png` for visual state.
+4. Check `observation.json` for `document.dirty`; when true, visual/DOM alignment is best-effort and important actions should re-observe first.
+5. Use snapshot UIDs with `click` and `fill`.
+6. Re-observe after navigation or mutations. Do not reuse stale UIDs.
 
 ## Commands
 
@@ -60,7 +61,7 @@ The evaluated source must be a JavaScript function expression. Keep results boun
 
 ## Artifacts
 
-`observe` writes a directory under `~/.firefox-devtools-mcp/rp152kpi/`, which is the Mozilla MCP server's allowed artifact location. Its `observation.json` identifies the screenshot and snapshot artifact paths. Do not paste large artifact contents into messages; inspect the exact files needed.
+`observe` writes a directory under `~/.firefox-devtools-mcp/rp152kpi/`, which is the Mozilla MCP server's allowed artifact location. Its `observation.json` identifies the screenshot, snapshot, and geometry artifact paths. Do not paste large artifact contents into messages; inspect the exact files needed.
 
 ## Recovery
 

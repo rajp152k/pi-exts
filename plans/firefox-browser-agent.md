@@ -2,7 +2,7 @@
 
 ## Status
 
-**Foundation implemented and live-tested.** The package resources, Firefox launcher, pinned MCPorter/Mozilla MCP configuration, `firefoxctl`, Pi extension, Pi skill, artifact baseline, and a real-Firefox smoke test are implemented. The visual-geometry/mutation-consistency layer, richer actions, and expanded fixture suite remain planned work.
+**Foundation and visual/DOM observation baseline implemented and live-tested.** The package resources, Firefox launcher, pinned MCPorter/Mozilla MCP configuration, `firefoxctl`, Pi extension, Pi skill, artifact pipeline, UID-to-geometry mapping, mutation tracking, and a real-Firefox smoke test are implemented. Multi-frame/full-page geometry, mutation retries, richer actions, and an expanded fixture suite remain planned work.
 
 ## Goal
 

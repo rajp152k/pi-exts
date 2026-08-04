@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { mkdir, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,6 +9,7 @@ import {
 	restartDaemon,
 } from "../lib/mcporter.mjs";
 import { withFirefoxLock } from "../lib/lock.mjs";
+import { createObservation } from "../lib/observation.mjs";
 
 function usage() {
 	return `Usage:
@@ -79,44 +79,14 @@ async function doctor() {
 }
 
 async function observe(index) {
-	const directory = artifactDirectory();
-	await mkdir(directory, { recursive: true });
-	const snapshotPath = join(directory, "snapshot.txt");
-	const screenshotPath = join(directory, "viewport.png");
-	const metadataPath = join(directory, "observation.json");
-
-	await withSelectedTab(index, async () => {
-		const snapshot = await callFirefox("take_snapshot", [
-			`saveTo=${snapshotPath}`,
-		]);
-		const screenshot = await callFirefox("screenshot_page", [
-			`saveTo=${screenshotPath}`,
-		]);
-		await writeFile(
-			metadataPath,
-			`${JSON.stringify(
-				{
-					schemaVersion: 1,
-					tabIndex: index,
-					createdAt: new Date().toISOString(),
-					snapshotPath,
-					screenshotPath,
-					snapshotResult: parseJson(snapshot.stdout, "take_snapshot"),
-					screenshotResult: parseJson(screenshot.stdout, "screenshot_page"),
-				},
-				null,
-				2,
-			)}\n`,
-		);
-	});
-
-	process.stdout.write(
-		`${JSON.stringify(
-			{ observationPath: metadataPath, snapshotPath, screenshotPath },
-			null,
-			2,
-		)}\n`,
+	const observation = await withSelectedTab(index, () =>
+		createObservation({
+			callFirefox,
+			directory: artifactDirectory(),
+			tabIndex: index,
+		}),
 	);
+	process.stdout.write(`${JSON.stringify(observation, null, 2)}\n`);
 }
 
 async function main(argv) {
