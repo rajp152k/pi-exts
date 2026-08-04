@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 const MAX_GEOMETRY_NODES = 80;
 const OBSERVER_KEY = "__rp152kpiFirefoxObservation";
@@ -35,12 +35,16 @@ function responseText(result, operation) {
 }
 
 function responseJson(result, operation) {
-	const match = responseText(result, operation).match(/```json\n([\s\S]*?)\n```/);
+	const match = responseText(result, operation).match(
+		/```json\n([\s\S]*?)\n```/,
+	);
 	if (!match) throw new Error(`missing JSON result from ${operation}`);
 	try {
 		return JSON.parse(match[1]);
 	} catch (error) {
-		throw new Error(`invalid evaluated JSON from ${operation}: ${error.message}`);
+		throw new Error(
+			`invalid evaluated JSON from ${operation}: ${error.message}`,
+		);
 	}
 }
 
@@ -59,7 +63,9 @@ async function resolveSelectors(callFirefox, uids) {
 	const resolved = [];
 	for (const uid of uids) {
 		try {
-			const result = await callFirefox("resolve_uid_to_selector", [`uid=${uid}`]);
+			const result = await callFirefox("resolve_uid_to_selector", [
+				`uid=${uid}`,
+			]);
 			const text = responseText(result, "resolve_uid_to_selector");
 			const selector = text.match(/→\s*(.+)$/m)?.[1];
 			if (selector) resolved.push({ uid, selector });
@@ -106,8 +112,15 @@ function geometryScript(refs) {
 			const bottom = Math.min(window.innerHeight, value.bottom);
 			return { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top), top, right, bottom, left };
 		};
+		const fingerprint = (value) => {
+			let hash = 2166136261;
+			for (let index = 0; index < value.length; index += 1) {
+				hash = Math.imul(hash ^ value.charCodeAt(index), 16777619);
+			}
+			return (hash >>> 0).toString(16) + ":" + value.length;
+		};
 		return {
-			page: { url: location.href, title: document.title },
+			page: { url: location.href, title: document.title, fingerprint: fingerprint(document.documentElement.outerHTML) },
 			viewport,
 			nodes: refs.map(({ uid, selector }) => {
 				let element;
@@ -133,7 +146,68 @@ function geometryScript(refs) {
 	}`;
 }
 
-export async function createObservation({ callFirefox, directory, tabIndex }) {
+function actionValidationScript(selector) {
+	return `() => {
+		const fingerprint = (value) => {
+			let hash = 2166136261;
+			for (let index = 0; index < value.length; index += 1) {
+				hash = Math.imul(hash ^ value.charCodeAt(index), 16777619);
+			}
+			return (hash >>> 0).toString(16) + ":" + value.length;
+		};
+		let element;
+		try { element = document.querySelector(${JSON.stringify(selector)}); } catch { element = null; }
+		return {
+			url: location.href,
+			fingerprint: fingerprint(document.documentElement.outerHTML),
+			element: element ? { tag: element.tagName.toLowerCase(), connected: element.isConnected } : null,
+		};
+	}`;
+}
+
+export async function validateActionObservation({ callFirefox, observationPath, uid }) {
+	let metadata;
+	try {
+		metadata = JSON.parse(await readFile(observationPath, "utf8"));
+	} catch (error) {
+		throw new Error(`cannot read observation ${observationPath}: ${error.message}`);
+	}
+	if (metadata.schemaVersion < 3) {
+		throw new Error("observation lacks action-safety data; capture a fresh observation");
+	}
+	if (metadata.document?.dirty) {
+		throw new Error("observation remained dirty after retry; capture a fresh observation before acting");
+	}
+	let geometry;
+	try {
+		geometry = JSON.parse(await readFile(metadata.geometryPath, "utf8"));
+	} catch (error) {
+		throw new Error(`cannot read observation geometry: ${error.message}`);
+	}
+	const expectedNode = geometry.nodes?.find((node) => node.uid === uid);
+	if (!expectedNode || expectedNode.missing) {
+		throw new Error(`UID ${uid} is not a usable node in observation ${metadata.observationId}`);
+	}
+	const actual = responseJson(
+		await callFirefox("evaluate_script", [
+			`function=${actionValidationScript(expectedNode.selector)}`,
+		]),
+		"action preflight",
+	);
+	if (
+		actual.url !== geometry.page?.url ||
+		actual.fingerprint !== geometry.page?.fingerprint ||
+		actual.element?.tag !== expectedNode.tag ||
+		!actual.element?.connected
+	) {
+		throw new Error(
+			`observation ${metadata.observationId} is stale; re-observe before acting`,
+		);
+	}
+	return metadata.observationId;
+}
+
+export async function createObservation({ callFirefox, directory, tabIndex, maxAttempts = 2 }) {
 	await mkdir(directory, { recursive: true });
 	const snapshotPath = join(directory, "snapshot.txt");
 	const screenshotPath = join(directory, "viewport.png");
@@ -142,44 +216,46 @@ export async function createObservation({ callFirefox, directory, tabIndex }) {
 	const metadataPath = join(directory, "observation.json");
 	const startPath = join(directory, "mutation-start.js");
 	const endPath = join(directory, "mutation-end.js");
+	let capture;
+	let attempts = 0;
 
-	await writeFile(startPath, mutationScript("start"));
-	await writeFile(endPath, mutationScript("end"));
-	const mutationBefore = responseJson(
-		await callFirefox("evaluate_script", [`function=@${startPath}`]),
-		"mutation start",
-	);
-	const snapshot = await callFirefox("take_snapshot", [`saveTo=${snapshotPath}`]);
-	const screenshot = await callFirefox("screenshot_page", [`saveTo=${screenshotPath}`]);
-	const selectors = await resolveSelectors(callFirefox, snapshotUids(await readFile(snapshotPath, "utf8")));
-	await writeFile(geometryFunctionPath, geometryScript(selectors));
-	const geometry = await callFirefox("evaluate_script", [
-		`function=@${geometryFunctionPath}`,
-		`saveTo=${geometryPath}`,
-	]);
-	const mutationAfter = responseJson(
-		await callFirefox("evaluate_script", [`function=@${endPath}`]),
-		"mutation end",
-	);
+	for (; attempts < maxAttempts; attempts += 1) {
+		await writeFile(startPath, mutationScript("start"));
+		await writeFile(endPath, mutationScript("end"));
+		const mutationBefore = responseJson(await callFirefox("evaluate_script", [`function=@${startPath}`]), "mutation start");
+		const snapshot = await callFirefox("take_snapshot", [`saveTo=${snapshotPath}`]);
+		const screenshot = await callFirefox("screenshot_page", [`saveTo=${screenshotPath}`]);
+		const selectors = await resolveSelectors(callFirefox, snapshotUids(await readFile(snapshotPath, "utf8")));
+		await writeFile(geometryFunctionPath, geometryScript(selectors));
+		const geometry = await callFirefox("evaluate_script", [`function=@${geometryFunctionPath}`, `saveTo=${geometryPath}`]);
+		const mutationAfter = responseJson(await callFirefox("evaluate_script", [`function=@${endPath}`]), "mutation end");
+		const dirty = mutationBefore.documentUrl !== mutationAfter.documentUrl || mutationAfter.mutationCount > 0;
+		capture = { mutationBefore, mutationAfter, snapshot, screenshot, geometry, selectors, dirty };
+		if (!dirty) break;
+	}
 
 	const metadata = {
-		schemaVersion: 2,
+		schemaVersion: 3,
+		observationId: basename(directory),
 		tabIndex,
 		createdAt: new Date().toISOString(),
 		snapshotPath,
 		screenshotPath,
 		geometryPath,
-		geometryNodeCount: selectors.length,
-		document: {
-			before: mutationBefore,
-			after: mutationAfter,
-			dirty:
-				mutationBefore.documentUrl !== mutationAfter.documentUrl ||
-				mutationAfter.mutationCount > 0,
+		geometryNodeCount: capture.selectors.length,
+		capture: {
+			attempts: Math.min(attempts + 1, maxAttempts),
+			maxAttempts,
+			stabilized: !capture.dirty,
 		},
-		snapshotResult: responsePayload(snapshot, "take_snapshot"),
-		screenshotResult: responsePayload(screenshot, "screenshot_page"),
-		geometryResult: responsePayload(geometry, "geometry evaluation"),
+		document: {
+			before: capture.mutationBefore,
+			after: capture.mutationAfter,
+			dirty: capture.dirty,
+		},
+		snapshotResult: responsePayload(capture.snapshot, "take_snapshot"),
+		screenshotResult: responsePayload(capture.screenshot, "screenshot_page"),
+		geometryResult: responsePayload(capture.geometry, "geometry evaluation"),
 	};
 	await writeFile(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
 	return { observationPath: metadataPath, snapshotPath, screenshotPath, geometryPath };

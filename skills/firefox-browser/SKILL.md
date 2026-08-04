@@ -26,8 +26,8 @@ firefoxctl tabs list
    ```
 
 3. Read `snapshot.txt` for semantic state, `geometry.json` for UID-to-rectangle/image mappings, and use Pi's `read` tool on `viewport.png` for visual state.
-4. Check `observation.json` for `document.dirty`; when true, visual/DOM alignment is best-effort and important actions should re-observe first.
-5. Use snapshot UIDs with `click` and `fill`.
+4. Check `observation.json`: capture retries once when it detects mutations. Do not act from an observation whose `document.dirty` remains true.
+5. Use snapshot UIDs with `click` and `fill`, always passing the matching `observation.json`. The wrapper rejects a changed document or a stale target before it acts.
 6. Re-observe after navigation or mutations. Do not reuse stale UIDs.
 
 ## Commands
@@ -36,8 +36,8 @@ firefoxctl tabs list
 firefoxctl tabs list
 firefoxctl navigate <index> <url>
 firefoxctl observe <index>
-firefoxctl click <index> <uid>
-firefoxctl fill <index> <uid> <text>
+firefoxctl click <index> <uid> --observation <observation.json>
+firefoxctl fill <index> <uid> <text> --observation <observation.json>
 firefoxctl eval <index> --file script.js
 firefoxctl screenshot <index> --save /tmp/page.png
 firefoxctl network <index>
@@ -68,4 +68,4 @@ The evaluated source must be a JavaScript function expression. Keep results boun
 - `firefoxctl doctor` reports missing Firefox, MCPorter, or connection failures.
 - `firefoxctl daemon restart` restarts MCPorter's persistent server transport.
 - If Firefox is not automation-enabled, fully quit it and start it with `just firefox-launch`.
-- If a UID fails, take a new snapshot or observation and select a current UID.
+- If an action reports a dirty or stale observation, take a new observation and select a current UID. `--force` is an explicit escape hatch and bypasses the safety check.

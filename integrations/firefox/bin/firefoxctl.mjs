@@ -9,7 +9,10 @@ import {
 	restartDaemon,
 } from "../lib/mcporter.mjs";
 import { withFirefoxLock } from "../lib/lock.mjs";
-import { createObservation } from "../lib/observation.mjs";
+import {
+	createObservation,
+	validateActionObservation,
+} from "../lib/observation.mjs";
 
 function usage() {
 	return `Usage:
@@ -22,8 +25,8 @@ function usage() {
   firefoxctl snapshot <index> [--save <path>]
   firefoxctl screenshot <index> [--save <path>]
   firefoxctl observe <index>
-  firefoxctl click <index> <uid>
-  firefoxctl fill <index> <uid> <text>
+  firefoxctl click <index> <uid> --observation <path> [--force]
+  firefoxctl fill <index> <uid> <text> --observation <path> [--force]
   firefoxctl eval <index> (--expr <function> | --file <path>)
   firefoxctl network <index>
   firefoxctl console <index>`;
@@ -156,21 +159,30 @@ async function main(argv) {
 		return observe(parseIndex(index));
 	}
 
-	if (command === "click") {
-		const [index, uid] = args;
-		if (!index || !uid) throw new Error("click requires <index> <uid>");
-		return withSelectedTab(parseIndex(index), async () =>
-			print(await callFirefox("click_by_uid", [`uid=${uid}`])),
-		);
-	}
-
-	if (command === "fill") {
+	if (command === "click" || command === "fill") {
 		const [index, uid, text] = args;
-		if (!index || !uid || text === undefined)
-			throw new Error("fill requires <index> <uid> <text>");
-		return withSelectedTab(parseIndex(index), async () =>
-			print(await callFirefox("fill_by_uid", [`uid=${uid}`, `value=${text}`])),
-		);
+		const observationFlag = args.indexOf("--observation");
+		const observationPath =
+			observationFlag === -1 ? undefined : args[observationFlag + 1];
+		const force = args.includes("--force");
+		if (!index || !uid || (command === "fill" && text === undefined)) {
+			throw new Error(`${command} requires ${command === "fill" ? "<index> <uid> <text>" : "<index> <uid>"}`);
+		}
+		if (!force && !observationPath) {
+			throw new Error(`${command} requires --observation <observation.json> (or explicit --force)`);
+		}
+		return withSelectedTab(parseIndex(index), async () => {
+			if (!force) {
+				await validateActionObservation({
+					callFirefox,
+					observationPath,
+					uid,
+				});
+			}
+			const tool = command === "click" ? "click_by_uid" : "fill_by_uid";
+			const toolArguments = command === "click" ? [`uid=${uid}`] : [`uid=${uid}`, `value=${text}`];
+			return print(await callFirefox(tool, toolArguments));
+		});
 	}
 
 	if (command === "eval") {
