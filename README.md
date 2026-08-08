@@ -11,6 +11,7 @@ Personal Pi extensions, organized under the `rp152kpi:<name>` namespace.
 - [`rp152kpi:notify`](extensions/rp152kpi:notify): shows a top-right tmux popup when Pi is ready for the next prompt.
 - [`rp152kpi:firefox`](extensions/rp152kpi:firefox): provides status and lifecycle controls for the live Firefox browser-agent integration.
 - [`tmux-control`](skills/tmux-control): directs Pi to safely inspect and control local tmux sessions through the tmux CLI.
+- [`pi-task-dispatch`](skills/pi-task-dispatch): dispatches and mandatorily monitors bounded one-shot Pi workers in tmux, retaining durable handoffs for consolidation.
 
 ## Install
 
@@ -26,7 +27,7 @@ Install the Firefox extension and skill:
 just install firefox
 ```
 
-Install the tmux-control skill:
+Install the tmux skills (`tmux-control` and `pi-task-dispatch`):
 
 ```bash
 just install tmux
