@@ -5,5 +5,8 @@
   "firefox": {
     "extensions": ["extensions/rp152kpi:firefox/index.ts"],
     "skills": ["skills/firefox-browser/SKILL.md"]
+  },
+  "tmux": {
+    "skills": ["skills/tmux-control/SKILL.md"]
   }
 }
