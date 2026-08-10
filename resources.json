@@ -11,5 +11,9 @@
       "skills/tmux-control/SKILL.md",
       "skills/pi-task-dispatch/SKILL.md"
     ]
+  },
+  "traces": {
+    "extensions": ["extensions/rp152kpi:traces/index.ts"],
+    "skills": ["skills/pi-traces/SKILL.md"]
   }
 }

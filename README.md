@@ -12,6 +12,7 @@ Personal Pi extensions, organized under the `rp152kpi:<name>` namespace.
 - [`rp152kpi:firefox`](extensions/rp152kpi:firefox): provides status and lifecycle controls for the live Firefox browser-agent integration.
 - [`tmux-control`](skills/tmux-control): directs Pi to safely inspect and control local tmux sessions through the tmux CLI.
 - [`pi-task-dispatch`](skills/pi-task-dispatch): dispatches and mandatorily monitors bounded one-shot Pi workers in tmux, retaining durable handoffs for consolidation.
+- [`rp152kpi:traces`](extensions/rp152kpi:traces): searches local trace indexes and loads bounded trace views through the `traces` CLI.
 
 ## Install
 
@@ -33,7 +34,13 @@ Install the tmux skills (`tmux-control` and `pi-task-dispatch`):
 just install tmux
 ```
 
-Install every extension:
+Install the traces extension and skill:
+
+```bash
+just install traces
+```
+
+Install every extension and skill:
 
 ```bash
 just all
