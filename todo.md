@@ -12,7 +12,7 @@
 
 ## 2. Declared outputs and write-path ownership
 
-- [ ] Add task metadata for `inputs`, `outputs`, and `writePaths` (files/globs/subsystems).
+- [x] Add task metadata for `inputs`, `outputs`, and `writePaths` (files/globs/subsystems).
 - [ ] Validate that concurrently eligible writer tasks do not claim overlapping output/write paths.
 - [ ] Require a single owner for shared integration files such as indexes, manifests, lockfiles, generated assets, and migrations.
 - [ ] Surface write-path conflicts as scheduler blocking reasons and in the TUI.
@@ -28,10 +28,10 @@
 
 ## 4. Workflow-context and artifact injection
 
-- [ ] Include workflow ID, task ID, attempt ID, artifact root, cwd/worktree, declared inputs/outputs, and handoff contract in every worker prompt/manifest.
-- [ ] Materialize dependency reports/artifact references for child tasks instead of asking workers to search default task-run roots.
-- [ ] Add bounded artifact-selection rules so downstream prompts receive relevant reports, not unbounded history.
-- [ ] Preserve provenance: record which parent artifacts and decisions were supplied to each child attempt.
+- [x] Include workflow ID, task ID, attempt ID, artifact root, cwd/worktree, declared inputs/outputs, and handoff contract in every worker prompt/manifest.
+- [x] Materialize dependency reports/artifact references for child tasks instead of asking workers to search default task-run roots.
+- [x] Add bounded artifact-selection rules so downstream prompts receive relevant reports, not unbounded history.
+- [x] Preserve provenance: record which parent artifacts and decisions were supplied to each child attempt.
 
 ## 5. Retry, timeout, and budget policy
 
