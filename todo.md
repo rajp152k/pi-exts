@@ -35,11 +35,11 @@
 
 ## 5. Retry, timeout, and budget policy
 
-- [ ] Add per-task retry count, retry classification, backoff/jitter, and retry eligibility.
-- [ ] Add wall-clock deadline, no-progress timeout, token budget, and cost budget policies at workflow and task levels.
-- [ ] Distinguish retriable transport/provider failures from failed acceptance checks and unsafe side effects.
-- [ ] Record every policy decision as an event, including budget refusal and retry scheduling.
-- [ ] Ensure retries create new attempts and never overwrite a prior report or event history.
+- [x] Add per-task retry count, retry classification, backoff, and retry eligibility.
+- [x] Add wall-clock deadline, no-progress timeout, token budget, and cost budget policies at task level.
+- [x] Distinguish retriable transport/provider failures from failed acceptance checks and unsafe side effects.
+- [x] Record every policy decision as an event, including budget refusal and retry scheduling.
+- [x] Ensure retries create new attempts and never overwrite a prior report or event history.
 
 ## 6. True Gantt, critical path, and observability UI
 

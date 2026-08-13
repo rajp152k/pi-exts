@@ -28,6 +28,12 @@ RPC_CANCEL_GRACE = 5.0
 SCHEDULER_LEASE_SECONDS = 300.0
 RUN_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
 TERMINAL_STATES = {"completed", "failed", "cancelled", "lost"}
+RETRY_OUTCOMES = {"transport", "provider", "timeout", "lost"}
+
+
+def policy_clock() -> float:
+    """Separate injectable clock for deterministic scheduling policy tests."""
+    return time.time()
 
 
 def now() -> str:
@@ -456,6 +462,10 @@ def db_connect(value: str) -> sqlite3.Connection:
     CREATE TABLE IF NOT EXISTS task_gates (workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, gate_type TEXT NOT NULL, PRIMARY KEY(workflow_id,task_id), FOREIGN KEY(workflow_id,task_id) REFERENCES tasks(workflow_id,id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS task_declarations (workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, inputs TEXT NOT NULL DEFAULT '[]', outputs TEXT NOT NULL DEFAULT '[]', write_paths TEXT NOT NULL DEFAULT '[]', handoff TEXT NOT NULL DEFAULT '', PRIMARY KEY(workflow_id,task_id), FOREIGN KEY(workflow_id,task_id) REFERENCES tasks(workflow_id,id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS managed_worktrees (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id) ON DELETE CASCADE, workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, source_path TEXT NOT NULL, worktree_path TEXT NOT NULL, branch TEXT NOT NULL, base_revision TEXT NOT NULL, owner TEXT NOT NULL, cleanup_policy TEXT NOT NULL DEFAULT 'clean', verification_state TEXT NOT NULL DEFAULT 'pending', changed_paths TEXT NOT NULL DEFAULT '[]', preserved_at TEXT, cleaned_at TEXT);
+    -- Kept in additive tables so old databases and callers using positional
+    -- attempts inserts remain compatible.
+    CREATE TABLE IF NOT EXISTS task_policies (workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, policy TEXT NOT NULL, PRIMARY KEY(workflow_id,task_id), FOREIGN KEY(workflow_id,task_id) REFERENCES tasks(workflow_id,id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS attempt_policies (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id) ON DELETE CASCADE, attempt_number INTEGER NOT NULL, retry_eligible INTEGER NOT NULL DEFAULT 0, not_before REAL, started_epoch REAL NOT NULL, last_progress_epoch REAL NOT NULL, cancel_requested_epoch REAL, decision TEXT NOT NULL DEFAULT '');
     CREATE INDEX IF NOT EXISTS events_workflow_id ON events(workflow_id,id); CREATE INDEX IF NOT EXISTS attempts_task ON attempts(workflow_id,task_id); CREATE INDEX IF NOT EXISTS dispatch_outbox_workflow ON dispatch_outbox(workflow_id,state);
     """)
     # Existing databases predate managed worktrees. SQLite only supports additive
@@ -598,6 +608,76 @@ def finding(
     return result
 
 
+def policy_for(
+    item: dict[str, Any], workflow: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Return the supported, inheritable policy fields without accepting extras."""
+    source = {**(workflow or {}), **item}
+    return {
+        key: source[key]
+        for key in (
+            "maxRetries",
+            "retryOn",
+            "retryBackoffSeconds",
+            "deadlineSeconds",
+            "noProgressSeconds",
+            "tokenBudget",
+            "costBudget",
+        )
+        if key in source
+    }
+
+
+def policy_errors(task_id: str, policy: dict[str, Any]) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    for key in ("maxRetries",):
+        if key in policy and (not isinstance(policy[key], int) or policy[key] < 0):
+            findings.append(
+                finding(
+                    "invalid-policy",
+                    "error",
+                    f"task {task_id} {key} must be a non-negative integer",
+                    task_ids=[task_id],
+                    remediation="Use a non-negative integer.",
+                )
+            )
+    for key in (
+        "retryBackoffSeconds",
+        "deadlineSeconds",
+        "noProgressSeconds",
+        "tokenBudget",
+        "costBudget",
+    ):
+        if key in policy and (
+            not isinstance(policy[key], (int, float))
+            or isinstance(policy[key], bool)
+            or policy[key] < 0
+        ):
+            findings.append(
+                finding(
+                    "invalid-policy",
+                    "error",
+                    f"task {task_id} {key} must be a non-negative number",
+                    task_ids=[task_id],
+                    remediation="Use a non-negative number.",
+                )
+            )
+    if "retryOn" in policy and (
+        not isinstance(policy["retryOn"], list)
+        or not set(policy["retryOn"]).issubset(RETRY_OUTCOMES)
+    ):
+        findings.append(
+            finding(
+                "invalid-retry-policy",
+                "error",
+                f"task {task_id} retryOn must contain only {sorted(RETRY_OUTCOMES)}",
+                task_ids=[task_id],
+                remediation="Use transport, provider, timeout, or lost.",
+            )
+        )
+    return findings
+
+
 def validate_workflow_spec(spec: Any) -> list[dict[str, Any]]:
     """Pure, conservative validation of an authoring workflow specification."""
     findings: list[dict[str, Any]] = []
@@ -659,6 +739,7 @@ def validate_workflow_spec(spec: Any) -> list[dict[str, Any]]:
             continue
         seen.add(task_id)
         valid[task_id] = task
+        findings.extend(policy_errors(task_id, policy_for(task, spec)))
         kind = task.get("kind", "task")
         if kind not in {"task", "gate"}:
             findings.append(
@@ -1019,6 +1100,10 @@ def create_workflow(
                         (workflow_id, task_id, str(item["gateType"])),
                     )
                 db.execute(
+                    "INSERT INTO task_policies VALUES(?,?,?)",
+                    (workflow_id, task_id, json.dumps(policy_for(item, spec))),
+                )
+                db.execute(
                     "INSERT INTO task_declarations VALUES(?,?,?,?,?,?)",
                     (
                         workflow_id,
@@ -1244,6 +1329,82 @@ def audit_managed_worktree(
     return verified
 
 
+def retry_outcome(manifest: dict[str, Any]) -> str | None:
+    """Only explicit, known-safe infrastructure outcomes may be retried."""
+    value = manifest.get("failureKind") or manifest.get("retryOutcome")
+    if value in RETRY_OUTCOMES:
+        return str(value)
+    if manifest.get("state") == "lost":
+        return "lost"
+    error = str(manifest.get("error") or "").lower()
+    for outcome in ("transport", "provider", "timeout"):
+        if error.startswith(outcome + ":"):
+            return outcome
+    return None
+
+
+def queue_retry_if_allowed(
+    db: sqlite3.Connection,
+    workflow_id: str,
+    attempt: sqlite3.Row,
+    manifest: dict[str, Any],
+) -> bool:
+    policy_row = db.execute(
+        "SELECT policy FROM task_policies WHERE workflow_id=? AND task_id=?",
+        (workflow_id, attempt["task_id"]),
+    ).fetchone()
+    try:
+        policy = json.loads(policy_row[0]) if policy_row else {}
+    except (TypeError, json.JSONDecodeError):
+        policy = {}
+    row = db.execute(
+        "SELECT attempt_number FROM attempt_policies WHERE attempt_id=?",
+        (attempt["id"],),
+    ).fetchone()
+    attempt_number = row[0] if row else 1
+    outcome = retry_outcome(manifest)
+    eligible = bool(
+        outcome
+        and outcome in policy.get("retryOn", [])
+        and attempt_number <= policy.get("maxRetries", 0)
+    )
+    not_before = (
+        policy_clock() + policy.get("retryBackoffSeconds", 0) if eligible else None
+    )
+    db.execute(
+        "UPDATE attempt_policies SET retry_eligible=?,not_before=?,decision=? WHERE attempt_id=?",
+        (
+            int(eligible),
+            not_before,
+            "retry-scheduled" if eligible else "terminal-no-retry",
+            attempt["id"],
+        ),
+    )
+    if not eligible:
+        event(
+            db,
+            workflow_id,
+            "policy.retry-refused",
+            task_id=attempt["task_id"],
+            attempt_id=attempt["id"],
+            detail={"outcome": outcome, "attempt": attempt_number},
+        )
+        return False
+    db.execute(
+        "UPDATE tasks SET state='queued',phase='retry_wait',updated_at=? WHERE workflow_id=? AND id=?",
+        (now(), workflow_id, attempt["task_id"]),
+    )
+    event(
+        db,
+        workflow_id,
+        "policy.retry-scheduled",
+        task_id=attempt["task_id"],
+        attempt_id=attempt["id"],
+        detail={"outcome": outcome, "attempt": attempt_number, "notBefore": not_before},
+    )
+    return True
+
+
 def project_terminal_manifest(
     db: sqlite3.Connection,
     workflow_id: str,
@@ -1271,10 +1432,14 @@ def project_terminal_manifest(
             attempt["id"],
         ),
     )
-    db.execute(
-        "UPDATE tasks SET state=?, phase=?, updated_at=? WHERE workflow_id=? AND id=?",
-        (task_state, None, now(), workflow_id, attempt["task_id"]),
+    retry = task_state == "failed" and queue_retry_if_allowed(
+        db, workflow_id, attempt, manifest
     )
+    if not retry:
+        db.execute(
+            "UPDATE tasks SET state=?, phase=?, updated_at=? WHERE workflow_id=? AND id=?",
+            (task_state, None, now(), workflow_id, attempt["task_id"]),
+        )
     db.execute(
         "UPDATE dispatch_outbox SET state=?,updated_at=? WHERE attempt_id=?",
         (state, now(), attempt["id"]),
@@ -1322,10 +1487,61 @@ def has_write_dispatch_gate(
 
 def refresh(db: sqlite3.Connection, workflow_id: str) -> None:
     """Project authoritative terminal worker manifests and resolve dependencies."""
+    # Retry waits are durable and use an injectable epoch clock.
+    for row in db.execute(
+        "SELECT t.id, ap.not_before FROM tasks t JOIN attempts a ON a.workflow_id=t.workflow_id AND a.task_id=t.id JOIN attempt_policies ap ON ap.attempt_id=a.id WHERE t.workflow_id=? AND t.state='queued' AND t.phase='retry_wait' AND ap.retry_eligible=1 ORDER BY ap.attempt_number DESC",
+        (workflow_id,),
+    ).fetchall():
+        if row["not_before"] is not None and policy_clock() >= row["not_before"]:
+            db.execute(
+                "UPDATE tasks SET state='ready',phase='retry',updated_at=? WHERE workflow_id=? AND id=?",
+                (now(), workflow_id, row["id"]),
+            )
+            event(db, workflow_id, "policy.retry-ready", task_id=row["id"])
     for attempt in db.execute(
         "SELECT * FROM attempts WHERE workflow_id=? AND state IN ('in_progress','orphaned')",
         (workflow_id,),
     ):
+        policy_row = db.execute(
+            "SELECT policy FROM task_policies WHERE workflow_id=? AND task_id=?",
+            (workflow_id, attempt["task_id"]),
+        ).fetchone()
+        try:
+            policy = json.loads(policy_row[0]) if policy_row else {}
+        except (TypeError, json.JSONDecodeError):
+            policy = {}
+        policy_state = db.execute(
+            "SELECT started_epoch,last_progress_epoch,cancel_requested_epoch FROM attempt_policies WHERE attempt_id=?",
+            (attempt["id"],),
+        ).fetchone()
+        if policy_state and policy_state["cancel_requested_epoch"] is None:
+            elapsed = policy_clock() - policy_state["started_epoch"]
+            stalled = policy_clock() - policy_state["last_progress_epoch"]
+            reason = (
+                "deadline"
+                if policy.get("deadlineSeconds") is not None
+                and elapsed >= policy["deadlineSeconds"]
+                else "no-progress"
+                if policy.get("noProgressSeconds") is not None
+                and stalled >= policy["noProgressSeconds"]
+                else None
+            )
+            if reason:
+                run_dir = Path(attempt["run_dir"])
+                run_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+                (run_dir / "cancel-requested").touch(exist_ok=True)
+                db.execute(
+                    "UPDATE attempt_policies SET cancel_requested_epoch=?,decision=? WHERE attempt_id=?",
+                    (policy_clock(), "cancellation-requested:" + reason, attempt["id"]),
+                )
+                event(
+                    db,
+                    workflow_id,
+                    "policy.cancellation-requested",
+                    task_id=attempt["task_id"],
+                    attempt_id=attempt["id"],
+                    detail={"reason": reason},
+                )
         manifest_path = Path(attempt["run_dir"]) / "manifest.json"
         if not manifest_path.exists():
             continue
@@ -1333,7 +1549,8 @@ def refresh(db: sqlite3.Connection, workflow_id: str) -> None:
         if manifest["state"] in TERMINAL_STATES:
             project_terminal_manifest(db, workflow_id, attempt, manifest)
     queued = db.execute(
-        "SELECT id FROM tasks WHERE workflow_id=? AND state='queued'", (workflow_id,)
+        "SELECT id FROM tasks WHERE workflow_id=? AND state='queued' AND phase IS NULL",
+        (workflow_id,),
     ).fetchall()
     for row in queued:
         gate = db.execute(
@@ -1720,6 +1937,32 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
                         continue
                 if slots <= 0:
                     break
+                policy_row = db.execute(
+                    "SELECT policy FROM task_policies WHERE workflow_id=? AND task_id=?",
+                    (workflow_id, task["id"]),
+                ).fetchone()
+                try:
+                    policy = json.loads(policy_row[0]) if policy_row else {}
+                except (TypeError, json.JSONDecodeError):
+                    policy = {}
+                # This MVP deliberately has no usage meter; a declared finite budget
+                # is therefore unavailable rather than guessed or silently exceeded.
+                if (
+                    policy.get("tokenBudget") is not None
+                    or policy.get("costBudget") is not None
+                ):
+                    db.execute(
+                        "UPDATE tasks SET state='blocked',phase='budget-unavailable',updated_at=? WHERE workflow_id=? AND id=?",
+                        (now(), workflow_id, task["id"]),
+                    )
+                    event(
+                        db,
+                        workflow_id,
+                        "policy.budget-refused",
+                        task_id=task["id"],
+                        detail={"reason": "usage-unavailable"},
+                    )
+                    continue
                 resources = parse_resources(task["resources"])
                 held = {
                     row[0]
@@ -1757,6 +2000,13 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
                     root
                     / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{task['id']}-{uuid.uuid4().hex[:6]}"
                 )
+                previous = (
+                    db.execute(
+                        "SELECT MAX(attempt_number) FROM attempt_policies ap JOIN attempts a ON a.id=ap.attempt_id WHERE a.workflow_id=? AND a.task_id=?",
+                        (workflow_id, task["id"]),
+                    ).fetchone()[0]
+                    or 0
+                )
                 db.execute(
                     "INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (
@@ -1771,6 +2021,27 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
                         None,
                         None,
                     ),
+                )
+                db.execute(
+                    "INSERT INTO attempt_policies VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        attempt_id,
+                        previous + 1,
+                        0,
+                        None,
+                        policy_clock(),
+                        policy_clock(),
+                        None,
+                        "scheduled",
+                    ),
+                )
+                event(
+                    db,
+                    workflow_id,
+                    "policy.attempt-created",
+                    task_id=task["id"],
+                    attempt_id=attempt_id,
+                    detail={"attempt": previous + 1},
                 )
                 db.execute(
                     "UPDATE tasks SET state='in_progress',phase='starting',updated_at=? WHERE workflow_id=? AND id=?",
