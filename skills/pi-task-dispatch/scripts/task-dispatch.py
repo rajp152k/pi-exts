@@ -23,6 +23,7 @@ DEFAULT_ROOT = Path.home() / ".pi" / "agent" / "task-runs"
 DEFAULT_DATABASE = Path.home() / ".pi" / "agent" / "workflows.db"
 READ_ONLY_TOOLS = "read,grep,find,ls"
 RPC_CANCEL_GRACE = 5.0
+SCHEDULER_LEASE_SECONDS = 300.0
 RUN_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
 TERMINAL_STATES = {"completed", "failed", "cancelled", "lost"}
 
@@ -117,6 +118,7 @@ def launch_worker(
     read_only: bool,
     root: Path,
     workflow: dict[str, str] | None = None,
+    run_dir: Path | None = None,
 ) -> Path:
     if not RUN_ID.fullmatch(task_id):
         fail(
@@ -125,11 +127,11 @@ def launch_worker(
     if not cwd.is_dir():
         fail(f"cwd is not a directory: {cwd}")
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    run_dir = (
+    run_dir = run_dir or (
         root
         / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{task_id}-{uuid.uuid4().hex[:6]}"
     )
-    run_dir.mkdir(mode=0o700)
+    run_dir.mkdir(mode=0o700, exist_ok=True)
     task_path = run_dir / "task.md"
     task_path.write_text(task.strip() + "\n", encoding="utf-8")
     os.chmod(task_path, 0o600)
@@ -422,8 +424,10 @@ def db_connect(value: str) -> sqlite3.Connection:
     CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, run_dir TEXT NOT NULL, state TEXT NOT NULL, tmux_pane TEXT, started_at TEXT NOT NULL, finished_at TEXT, exit_code INTEGER, error TEXT);
     CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL, task_id TEXT, attempt_id TEXT, type TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS resource_leases (workflow_id TEXT NOT NULL, resource TEXT NOT NULL, attempt_id TEXT NOT NULL, acquired_at TEXT NOT NULL, PRIMARY KEY(workflow_id,resource));
+    CREATE TABLE IF NOT EXISTS scheduler_leases (workflow_id TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at REAL NOT NULL);
+    CREATE TABLE IF NOT EXISTS dispatch_outbox (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id) ON DELETE CASCADE, workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, run_dir TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, error TEXT);
     CREATE TABLE IF NOT EXISTS workflow_specs (workflow_id TEXT PRIMARY KEY REFERENCES workflows(id) ON DELETE CASCADE, spec TEXT NOT NULL, created_at TEXT NOT NULL);
-    CREATE INDEX IF NOT EXISTS events_workflow_id ON events(workflow_id,id); CREATE INDEX IF NOT EXISTS attempts_task ON attempts(workflow_id,task_id);
+    CREATE INDEX IF NOT EXISTS events_workflow_id ON events(workflow_id,id); CREATE INDEX IF NOT EXISTS attempts_task ON attempts(workflow_id,task_id); CREATE INDEX IF NOT EXISTS dispatch_outbox_workflow ON dispatch_outbox(workflow_id,state);
     """)
     return db
 
@@ -859,6 +863,48 @@ def parse_resources(value: str) -> list[str]:
     return result
 
 
+def acquire_scheduler_lease(
+    db: sqlite3.Connection,
+    workflow_id: str,
+    *,
+    owner: str | None = None,
+    lease_seconds: float = SCHEDULER_LEASE_SECONDS,
+) -> str | None:
+    """Acquire the workflow scheduler lease, reclaiming only an expired owner."""
+    owner = owner or uuid.uuid4().hex
+    try:
+        db.execute("BEGIN IMMEDIATE")
+        db.execute(
+            "DELETE FROM scheduler_leases WHERE workflow_id=? AND expires_at<=?",
+            (workflow_id, time.time()),
+        )
+        acquired = db.execute(
+            "INSERT OR IGNORE INTO scheduler_leases VALUES(?,?,?)",
+            (workflow_id, owner, time.time() + lease_seconds),
+        ).rowcount
+        if acquired:
+            event(db, workflow_id, "scheduler.lease-acquired", detail={"owner": owner})
+            db.commit()
+            return owner
+        db.rollback()
+        return None
+    except sqlite3.OperationalError:
+        if db.in_transaction:
+            db.rollback()
+        return None
+
+
+def release_scheduler_lease(
+    db: sqlite3.Connection, workflow_id: str, owner: str
+) -> None:
+    with db:
+        if db.execute(
+            "DELETE FROM scheduler_leases WHERE workflow_id=? AND owner=?",
+            (workflow_id, owner),
+        ).rowcount:
+            event(db, workflow_id, "scheduler.lease-released", detail={"owner": owner})
+
+
 def workflow_row(db: sqlite3.Connection, workflow_id: str) -> sqlite3.Row:
     row = db.execute("SELECT * FROM workflows WHERE id=?", (workflow_id,)).fetchone()
     if not row:
@@ -940,131 +986,230 @@ def refresh(db: sqlite3.Connection, workflow_id: str) -> None:
             event(db, workflow_id, "task.ready", task_id=row["id"])
 
 
-def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
+def reconcile_dispatch_outbox(
+    db: sqlite3.Connection, workflow_id: str, root: Path
+) -> None:
+    """Finish durable dispatch intents; never launch twice after an ambiguous launch."""
+    pending = db.execute(
+        "SELECT o.*, a.*, t.prompt, t.cwd, t.access FROM dispatch_outbox o "
+        "JOIN attempts a ON a.id=o.attempt_id "
+        "JOIN tasks t ON t.workflow_id=o.workflow_id AND t.id=o.task_id "
+        "WHERE o.workflow_id=? AND o.state='pending' ORDER BY o.created_at",
+        (workflow_id,),
+    ).fetchall()
     workflow = workflow_row(db, workflow_id)
-    with db:
-        refresh(db, workflow_id)
-        if workflow["state"] == "draft":
-            db.execute(
-                "UPDATE workflows SET state='running',updated_at=? WHERE id=?",
-                (now(), workflow_id),
-            )
-            event(db, workflow_id, "workflow.started")
-        active = db.execute(
-            "SELECT COUNT(*) FROM attempts WHERE workflow_id=? AND state='in_progress'",
-            (workflow_id,),
-        ).fetchone()[0]
-        slots = workflow["max_concurrency"] - active
-        ready = db.execute(
-            "SELECT * FROM tasks WHERE workflow_id=? AND state='ready' ORDER BY priority DESC, created_at",
-            (workflow_id,),
-        ).fetchall()
-        for task in ready:
-            if slots <= 0:
-                break
-            resources = parse_resources(task["resources"])
-            held = {
-                r[0]
-                for r in db.execute(
-                    "SELECT resource FROM resource_leases WHERE workflow_id=?",
-                    (workflow_id,),
+    for item in pending:
+        run_dir = Path(item["run_dir"])
+        manifest_path = run_dir / "manifest.json"
+        if manifest_path.exists():
+            manifest = load_manifest(run_dir)
+            if manifest.get("state") == "running":
+                db.execute(
+                    "UPDATE dispatch_outbox SET state='launched',updated_at=? WHERE attempt_id=?",
+                    (now(), item["attempt_id"]),
                 )
-            }
-            if held.intersection(resources):
                 event(
                     db,
                     workflow_id,
-                    "scheduler.deferred",
-                    task_id=task["id"],
-                    detail={"reason": "resource-held", "resources": resources},
+                    "dispatch.reconciled",
+                    task_id=item["task_id"],
+                    attempt_id=item["attempt_id"],
+                    detail={"state": "launched"},
                 )
                 continue
-            if task["access"] != "read-only" and not any(
-                r.startswith("worktree:") for r in resources
-            ):
+            # tmux may have succeeded immediately before a crash, but no target was
+            # durably recorded. Failing closed is safer than a duplicate worker.
+            error = "tmux launch outcome was not durably recorded"
+        else:
+            try:
+                launch_worker(
+                    task_id=item["task_id"],
+                    session=workflow["tmux_session"],
+                    cwd=Path(item["cwd"]),
+                    task=item["prompt"],
+                    read_only=item["access"] == "read-only",
+                    root=root,
+                    workflow={"id": workflow_id, "attemptId": item["attempt_id"]},
+                    run_dir=run_dir,
+                )
+                manifest = load_manifest(run_dir)
                 db.execute(
-                    "UPDATE tasks SET state='blocked',updated_at=? WHERE workflow_id=? AND id=?",
+                    "UPDATE attempts SET tmux_pane=? WHERE id=?",
+                    (manifest["tmux"]["paneId"], item["attempt_id"]),
+                )
+                db.execute(
+                    "UPDATE dispatch_outbox SET state='launched',updated_at=? WHERE attempt_id=?",
+                    (now(), item["attempt_id"]),
+                )
+                event(
+                    db,
+                    workflow_id,
+                    "attempt.dispatched",
+                    task_id=item["task_id"],
+                    attempt_id=item["attempt_id"],
+                    detail={"runDir": str(run_dir), "pane": manifest["tmux"]["paneId"]},
+                )
+                continue
+            except SystemExit as launch_error:
+                error = str(launch_error)
+        db.execute(
+            "UPDATE dispatch_outbox SET state='failed',updated_at=?,error=? WHERE attempt_id=?",
+            (now(), error, item["attempt_id"]),
+        )
+        db.execute(
+            "UPDATE attempts SET state='failed',finished_at=?,error=? WHERE id=?",
+            (now(), error, item["attempt_id"]),
+        )
+        db.execute(
+            "UPDATE tasks SET state='failed',phase=NULL,updated_at=? WHERE workflow_id=? AND id=?",
+            (now(), workflow_id, item["task_id"]),
+        )
+        db.execute(
+            "DELETE FROM resource_leases WHERE workflow_id=? AND attempt_id=?",
+            (workflow_id, item["attempt_id"]),
+        )
+        event(
+            db,
+            workflow_id,
+            "dispatch.failed",
+            task_id=item["task_id"],
+            attempt_id=item["attempt_id"],
+            detail={"reason": error},
+        )
+
+
+def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
+    """Schedule under a SQLite lease and launch only durable dispatch intents."""
+    owner = acquire_scheduler_lease(db, workflow_id)
+    if owner is None:
+        return
+    try:
+        with db:
+            workflow = workflow_row(db, workflow_id)
+            refresh(db, workflow_id)
+            if workflow["state"] == "draft":
+                db.execute(
+                    "UPDATE workflows SET state='running',updated_at=? WHERE id=?",
+                    (now(), workflow_id),
+                )
+                event(db, workflow_id, "workflow.started")
+            reconcile_dispatch_outbox(db, workflow_id, root)
+            active = db.execute(
+                "SELECT COUNT(*) FROM attempts WHERE workflow_id=? AND state='in_progress'",
+                (workflow_id,),
+            ).fetchone()[0]
+            slots = workflow["max_concurrency"] - active
+            ready = db.execute(
+                "SELECT * FROM tasks WHERE workflow_id=? AND state='ready' ORDER BY priority DESC, created_at",
+                (workflow_id,),
+            ).fetchall()
+            for task in ready:
+                if slots <= 0:
+                    break
+                resources = parse_resources(task["resources"])
+                held = {
+                    row[0]
+                    for row in db.execute(
+                        "SELECT resource FROM resource_leases WHERE workflow_id=?",
+                        (workflow_id,),
+                    )
+                }
+                if held.intersection(resources):
+                    event(
+                        db,
+                        workflow_id,
+                        "scheduler.deferred",
+                        task_id=task["id"],
+                        detail={"reason": "resource-held", "resources": resources},
+                    )
+                    continue
+                if task["access"] != "read-only" and not any(
+                    r.startswith("worktree:") for r in resources
+                ):
+                    db.execute(
+                        "UPDATE tasks SET state='blocked',updated_at=? WHERE workflow_id=? AND id=?",
+                        (now(), workflow_id, task["id"]),
+                    )
+                    event(
+                        db,
+                        workflow_id,
+                        "task.blocked",
+                        task_id=task["id"],
+                        detail={"reason": "write task requires a worktree:* resource"},
+                    )
+                    continue
+                attempt_id = uuid.uuid4().hex
+                run_dir = (
+                    root
+                    / f"{datetime.now().strftime('%Y%m%d-%H%M%S')}-{task['id']}-{uuid.uuid4().hex[:6]}"
+                )
+                db.execute(
+                    "INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        attempt_id,
+                        workflow_id,
+                        task["id"],
+                        str(run_dir),
+                        "in_progress",
+                        None,
+                        now(),
+                        None,
+                        None,
+                        None,
+                    ),
+                )
+                db.execute(
+                    "UPDATE tasks SET state='in_progress',phase='starting',updated_at=? WHERE workflow_id=? AND id=?",
                     (now(), workflow_id, task["id"]),
                 )
-                event(
-                    db,
-                    workflow_id,
-                    "task.blocked",
-                    task_id=task["id"],
-                    detail={"reason": "write task requires a worktree:* resource"},
-                )
-                continue
-            attempt_id = uuid.uuid4().hex
-            try:
-                run_dir = launch_worker(
-                    task_id=task["id"],
-                    session=workflow["tmux_session"],
-                    cwd=Path(task["cwd"]),
-                    task=task["prompt"],
-                    read_only=task["access"] == "read-only",
-                    root=root,
-                    workflow={"id": workflow_id, "attemptId": attempt_id},
-                )
-            except SystemExit as error:
-                event(
-                    db,
-                    workflow_id,
-                    "scheduler.deferred",
-                    task_id=task["id"],
-                    detail={"reason": str(error)},
-                )
-                continue
-            manifest = load_manifest(run_dir)
-            db.execute(
-                "INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (
-                    attempt_id,
-                    workflow_id,
-                    task["id"],
-                    str(run_dir),
-                    "in_progress",
-                    manifest["tmux"]["paneId"],
-                    now(),
-                    None,
-                    None,
-                    None,
-                ),
-            )
-            db.execute(
-                "UPDATE tasks SET state='in_progress',phase='starting',updated_at=? WHERE workflow_id=? AND id=?",
-                (now(), workflow_id, task["id"]),
-            )
-            for resource in resources:
+                for resource in resources:
+                    db.execute(
+                        "INSERT INTO resource_leases VALUES(?,?,?,?)",
+                        (workflow_id, resource, attempt_id, now()),
+                    )
                 db.execute(
-                    "INSERT INTO resource_leases VALUES(?,?,?,?)",
-                    (workflow_id, resource, attempt_id, now()),
+                    "INSERT INTO dispatch_outbox VALUES(?,?,?,?,?,?,?,NULL)",
+                    (
+                        attempt_id,
+                        workflow_id,
+                        task["id"],
+                        str(run_dir),
+                        "pending",
+                        now(),
+                        now(),
+                    ),
                 )
-            event(
-                db,
-                workflow_id,
-                "attempt.dispatched",
-                task_id=task["id"],
-                attempt_id=attempt_id,
-                detail={"runDir": str(run_dir), "pane": manifest["tmux"]["paneId"]},
-            )
-            slots -= 1
-        remaining = db.execute(
-            "SELECT COUNT(*) FROM tasks WHERE workflow_id=? AND state NOT IN ('done','failed','blocked','cancelled')",
-            (workflow_id,),
-        ).fetchone()[0]
-        if remaining == 0:
-            states = {
-                r[0]
-                for r in db.execute(
-                    "SELECT state FROM tasks WHERE workflow_id=?", (workflow_id,)
+                event(
+                    db,
+                    workflow_id,
+                    "dispatch.intent-recorded",
+                    task_id=task["id"],
+                    attempt_id=attempt_id,
+                    detail={"runDir": str(run_dir)},
                 )
-            }
-            final = "completed" if states == {"done"} else "failed"
-            db.execute(
-                "UPDATE workflows SET state=?,updated_at=? WHERE id=?",
-                (final, now(), workflow_id),
-            )
-            event(db, workflow_id, f"workflow.{final}")
+                slots -= 1
+        # tmux is external: its outcome is reconciled from the durable intent.
+        with db:
+            reconcile_dispatch_outbox(db, workflow_id, root)
+            remaining = db.execute(
+                "SELECT COUNT(*) FROM tasks WHERE workflow_id=? AND state NOT IN ('done','failed','blocked','cancelled')",
+                (workflow_id,),
+            ).fetchone()[0]
+            if remaining == 0:
+                states = {
+                    row[0]
+                    for row in db.execute(
+                        "SELECT state FROM tasks WHERE workflow_id=?", (workflow_id,)
+                    )
+                }
+                final = "completed" if states == {"done"} else "failed"
+                db.execute(
+                    "UPDATE workflows SET state=?,updated_at=? WHERE id=?",
+                    (final, now(), workflow_id),
+                )
+                event(db, workflow_id, f"workflow.{final}")
+    finally:
+        release_scheduler_lease(db, workflow_id, owner)
 
 
 def print_workflow(
