@@ -67,6 +67,21 @@ task-dispatch --database "$DB" --root "$ROOT" workflow watch repo-scouts
 
 The watcher prints an exact `tmux select-window` command. Its board has Queued, Ready, In progress, Done, Failed, Blocked, and Cancelled columns. The bottom timing line is a compact recent-attempt summary, not a full graphical Gantt chart. Press `r` for an immediate tick and `q` to exit. Pass `--no-drive` to observe without scheduling.
 
+## Validation and refinement
+
+Validate either a draft file or a stored workflow before dispatch:
+
+```bash
+task-dispatch workflow validate --file workflow.json
+task-dispatch --database "$DB" workflow validate repo-scouts
+```
+
+The command prints JSON findings with severity, task IDs, affected edges where relevant, and remediation. `workflow create` rejects error findings. The current validator checks task IDs and metadata types, dependencies/cycles/roots, access/state values, writer worktree resources, and concurrent writer path collisions. It preserves prompt-only legacy specs but reports missing objective, deliverable, completion-evidence, or handoff fields as warnings.
+
+Use the refinement loop: validate; resolve agent-safe findings in the spec; ask a focused human question for scope, ownership, authorization, or other unsafe ambiguity; then rerun the complete validation set. Do not dispatch with errors. Review warnings before dispatch.
+
+> **Current limit:** recorded warning overrides, persisted refinement rounds/human answers, and a first-class `refining` state are not implemented yet.
+
 ## Graph and scheduling rules
 
 - Dependencies have all-success semantics: a child becomes ready after every parent is done.

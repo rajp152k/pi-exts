@@ -2,10 +2,10 @@
 
 ## 1. Workflow specification validation
 
-- [ ] Add `workflow validate --file workflow.json` before persistence and `workflow validate WORKFLOW_ID` for stored workflows.
+- [x] Add `workflow validate --file workflow.json` before persistence and `workflow validate WORKFLOW_ID` for stored workflows.
 - [ ] Reject duplicate IDs, missing dependencies, dependency cycles, no-root graphs, unreachable nodes, invalid states, and impossible dependency expressions.
 - [ ] Verify every task has a bounded objective, expected deliverable, completion evidence, access mode, and handoff contract.
-- [ ] Explain validation findings with task IDs, offending edges, severity, and a concrete remediation.
+- [x] Explain validation findings with task IDs, offending edges, severity, and a concrete remediation.
 - [ ] Make `workflow create` run validation by default; provide an explicit, recorded override only for deliberate exceptions.
 - [ ] Add a `refining` workflow phase: classify each validation finding as agent-resolvable, human-required, or unsafe/ambiguous; apply safe refinements or ask focused human questions; rerun complete validation after every revision; block dispatch until errors are resolved and required approvals are recorded.
 - [ ] Persist graph revision, validation round, findings, refinement rationale, human answers, and accepted warning rationale so dispatch provenance is auditable.

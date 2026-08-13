@@ -74,6 +74,21 @@ task-dispatch workflow inspect implementation-plan map-relevant-modules
 
 `workflow watch implementation-plan` opens a dependency-aware live board in a new window of the workflow's configured tmux session. It drives reconciliation/scheduling by default and shows Queued, Ready, In progress, Done, Failed, Blocked, and Cancelled columns plus recent attempt timing. Press `r` to reconcile/schedule and `q` to exit. The command prints the exact `tmux select-window` target; use `--no-drive` for observation only.
 
+### Validation and refinement
+
+Validate a draft or stored workflow before dispatch:
+
+```bash
+task-dispatch workflow validate --file workflow.json
+task-dispatch workflow validate implementation-plan
+```
+
+Findings are JSON with severity, task IDs, affected edges where relevant, and remediation. `workflow create` rejects errors. The validator checks IDs and metadata types, dependencies/cycles/roots, access/state values, writer worktree resources, and concurrent writer path collisions. Legacy prompt-only tasks remain valid but receive contract warnings for missing objective, deliverable, completion evidence, or handoff.
+
+Use the refinement loop: resolve findings the agent can establish safely; ask a focused human question when scope, authorization, ownership, or another unsafe ambiguity remains; then rerun the complete validation set. Do not dispatch with errors; review warnings before dispatch.
+
+> **Current limit:** recorded warning overrides, persisted refinement rounds/human answers, and a first-class `refining` state are still pending.
+
 The scheduler observes the configured `maxConcurrency`, serializes matching resource tags, and requires every default-tools (writing) task to declare a `worktree:<name>` resource. Read-only work can run in parallel. Cancellation is explicit:
 
 ```bash

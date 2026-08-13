@@ -422,6 +422,7 @@ def db_connect(value: str) -> sqlite3.Connection:
     CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, run_dir TEXT NOT NULL, state TEXT NOT NULL, tmux_pane TEXT, started_at TEXT NOT NULL, finished_at TEXT, exit_code INTEGER, error TEXT);
     CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL, task_id TEXT, attempt_id TEXT, type TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS resource_leases (workflow_id TEXT NOT NULL, resource TEXT NOT NULL, attempt_id TEXT NOT NULL, acquired_at TEXT NOT NULL, PRIMARY KEY(workflow_id,resource));
+    CREATE TABLE IF NOT EXISTS workflow_specs (workflow_id TEXT PRIMARY KEY REFERENCES workflows(id) ON DELETE CASCADE, spec TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE INDEX IF NOT EXISTS events_workflow_id ON events(workflow_id,id); CREATE INDEX IF NOT EXISTS attempts_task ON attempts(workflow_id,task_id);
     """)
     return db
@@ -450,6 +451,300 @@ def valid_task_id(value: Any) -> str:
     return value
 
 
+def finding(
+    code: str,
+    severity: str,
+    message: str,
+    *,
+    task_ids: list[str] | None = None,
+    edge: tuple[str, str] | None = None,
+    remediation: str,
+) -> dict[str, Any]:
+    """Build a stable, JSON-serializable validation finding."""
+    result: dict[str, Any] = {
+        "code": code,
+        "severity": severity,
+        "message": message,
+        "taskIds": task_ids or [],
+        "remediation": remediation,
+    }
+    if task_ids:
+        result["task"] = task_ids[0]
+    if edge:
+        result["edge"] = {"task": edge[0], "dependsOn": edge[1]}
+    return result
+
+
+def validate_workflow_spec(spec: Any) -> list[dict[str, Any]]:
+    """Pure, conservative validation of an authoring workflow specification."""
+    findings: list[dict[str, Any]] = []
+    if not isinstance(spec, dict):
+        return [
+            finding(
+                "invalid-spec",
+                "error",
+                "workflow spec must be an object",
+                remediation="Provide a JSON object with a tasks array.",
+            )
+        ]
+    tasks = spec.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        return [
+            finding(
+                "invalid-tasks",
+                "error",
+                "workflow needs a non-empty tasks array",
+                remediation="Add at least one task object.",
+            )
+        ]
+    seen: set[str] = set()
+    valid: dict[str, dict[str, Any]] = {}
+    for index, task in enumerate(tasks):
+        if not isinstance(task, dict):
+            findings.append(
+                finding(
+                    "invalid-task",
+                    "error",
+                    f"task {index} must be an object",
+                    remediation="Replace it with a task object.",
+                )
+            )
+            continue
+        task_id = task.get("id")
+        display_id = task_id if isinstance(task_id, str) else f"task-{index}"
+        if not isinstance(task_id, str) or not RUN_ID.fullmatch(task_id):
+            findings.append(
+                finding(
+                    "invalid-task-id",
+                    "error",
+                    f"task id {task_id!r} is invalid",
+                    task_ids=[display_id],
+                    remediation="Use lowercase letters, digits, and single hyphens (max 48 characters).",
+                )
+            )
+            continue
+        if task_id in seen:
+            findings.append(
+                finding(
+                    "duplicate-task-id",
+                    "error",
+                    f"task id {task_id!r} is duplicated",
+                    task_ids=[task_id],
+                    remediation="Give every task a unique id.",
+                )
+            )
+            continue
+        seen.add(task_id)
+        valid[task_id] = task
+        access = task.get("access", "read-only")
+        if access not in {"read-only", "default-tools"}:
+            findings.append(
+                finding(
+                    "invalid-access",
+                    "error",
+                    f"task {task_id} has invalid access {access!r}",
+                    task_ids=[task_id],
+                    remediation="Use read-only or default-tools.",
+                )
+            )
+        state = task.get("state", "queued")
+        if state not in {
+            "queued",
+            "ready",
+            "in_progress",
+            "done",
+            "failed",
+            "blocked",
+            "cancelled",
+        }:
+            findings.append(
+                finding(
+                    "invalid-state",
+                    "error",
+                    f"task {task_id} has invalid state {state!r}",
+                    task_ids=[task_id],
+                    remediation="Use a supported workflow task state.",
+                )
+            )
+        missing = [
+            field
+            for field in ("objective", "deliverable", "completionEvidence", "handoff")
+            if not isinstance(task.get(field), str) or not task[field].strip()
+        ]
+        if missing:
+            findings.append(
+                finding(
+                    "missing-task-contract",
+                    "warning",
+                    f"task {task_id} lacks {', '.join(missing)}",
+                    task_ids=[task_id],
+                    remediation="Add bounded objective, deliverable, completionEvidence, and handoff fields.",
+                )
+            )
+        if not isinstance(
+            task.get("prompt", task.get("title", "")), str
+        ) and not isinstance(task.get("objective"), str):
+            findings.append(
+                finding(
+                    "missing-task-prompt",
+                    "error",
+                    f"task {task_id} lacks prompt, title, and objective",
+                    task_ids=[task_id],
+                    remediation="Add a prompt or a bounded objective.",
+                )
+            )
+        for field in ("dependsOn", "resources", "inputs", "outputs", "writePaths"):
+            value = task.get(field, [])
+            if not isinstance(value, list) or not all(
+                isinstance(item, str) and item.strip() for item in value
+            ):
+                findings.append(
+                    finding(
+                        "invalid-task-metadata",
+                        "error",
+                        f"task {task_id} {field} must be a list of non-empty strings",
+                        task_ids=[task_id],
+                        remediation=f"Provide {field} as a string list.",
+                    )
+                )
+        if access == "default-tools" and not any(
+            isinstance(r, str) and r.startswith("worktree:")
+            for r in task.get("resources", [])
+        ):
+            findings.append(
+                finding(
+                    "missing-worktree-resource",
+                    "error",
+                    f"writer task {task_id} lacks a worktree resource",
+                    task_ids=[task_id],
+                    remediation="Declare a unique worktree:<name> resource.",
+                )
+            )
+    dependencies: dict[str, set[str]] = {task_id: set() for task_id in valid}
+    for task_id, task in valid.items():
+        depends_on = task.get("dependsOn", [])
+        if not isinstance(depends_on, list):
+            continue
+        for parent in depends_on:
+            if not isinstance(parent, str) or parent not in valid:
+                findings.append(
+                    finding(
+                        "missing-dependency",
+                        "error",
+                        f"task {task_id} depends on unknown task {parent!r}",
+                        task_ids=[task_id],
+                        edge=(task_id, str(parent)),
+                        remediation="Reference an existing task id or remove the dependency.",
+                    )
+                )
+            elif parent == task_id:
+                findings.append(
+                    finding(
+                        "self-dependency",
+                        "error",
+                        f"task {task_id} depends on itself",
+                        task_ids=[task_id],
+                        edge=(task_id, parent),
+                        remediation="Remove the self dependency.",
+                    )
+                )
+            else:
+                dependencies[task_id].add(parent)
+    roots = [task_id for task_id, parents in dependencies.items() if not parents]
+    if valid and not roots:
+        findings.append(
+            finding(
+                "no-root-task",
+                "error",
+                "workflow graph has no root task",
+                task_ids=sorted(valid),
+                remediation="Remove a cyclic dependency or add a task without dependencies.",
+            )
+        )
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(task_id: str) -> None:
+        if task_id in visiting:
+            findings.append(
+                finding(
+                    "dependency-cycle",
+                    "error",
+                    f"dependency cycle includes {task_id}",
+                    task_ids=[task_id],
+                    remediation="Remove an edge so dependencies form a DAG.",
+                )
+            )
+            return
+        if task_id in visited:
+            return
+        visiting.add(task_id)
+        for parent in dependencies[task_id]:
+            visit(parent)
+        visiting.remove(task_id)
+        visited.add(task_id)
+
+    for task_id in valid:
+        visit(task_id)
+
+    def ordered(left: str, right: str) -> bool:
+        stack = list(dependencies[left])
+        walked: set[str] = set()
+        while stack:
+            node = stack.pop()
+            if node == right:
+                return True
+            if node not in walked:
+                walked.add(node)
+                stack.extend(dependencies[node])
+        return False
+
+    writers = [
+        (task_id, task)
+        for task_id, task in valid.items()
+        if task.get("access", "read-only") == "default-tools"
+    ]
+    for index, (left_id, left) in enumerate(writers):
+        for right_id, right in writers[index + 1 :]:
+            if ordered(left_id, right_id) or ordered(right_id, left_id):
+                continue
+            for left_path in left.get("writePaths", []) + left.get("outputs", []):
+                for right_path in right.get("writePaths", []) + right.get(
+                    "outputs", []
+                ):
+                    if (
+                        isinstance(left_path, str)
+                        and isinstance(right_path, str)
+                        and (
+                            left_path == right_path
+                            or left_path.rstrip("/").startswith(
+                                right_path.rstrip("/") + "/"
+                            )
+                            or right_path.rstrip("/").startswith(
+                                left_path.rstrip("/") + "/"
+                            )
+                        )
+                    ):
+                        findings.append(
+                            finding(
+                                "write-path-conflict",
+                                "error",
+                                f"writers {left_id} and {right_id} can concurrently claim {left_path!r}",
+                                task_ids=[left_id, right_id],
+                                remediation="Assign one owner or add an explicit dependency between the writers.",
+                            )
+                        )
+                        break
+                else:
+                    continue
+                break
+    return findings
+
+
+# Short public alias for callers that do not need the legacy name.
+validate_spec = validate_workflow_spec
+
+
 def load_spec(path: str) -> dict[str, Any]:
     try:
         spec = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -467,6 +762,12 @@ def create_workflow(
     session_override: str | None = None,
     cwd_override: str | None = None,
 ) -> str:
+    errors = [item for item in validate_spec(spec) if item["severity"] == "error"]
+    if errors:
+        fail(
+            "workflow validation failed: "
+            + "; ".join(item["message"] for item in errors)
+        )
     workflow_id = valid_task_id(spec.get("id") or f"workflow-{uuid.uuid4().hex[:12]}")
     name = str(spec.get("name") or workflow_id)
     cwd = Path(cwd_override or spec.get("cwd") or ".").expanduser().resolve()
@@ -492,9 +793,11 @@ def create_workflow(
                 if task_id in seen:
                     fail(f"duplicate task id: {task_id}")
                 seen.add(task_id)
-                prompt = item.get("prompt") or item.get("title")
+                prompt = (
+                    item.get("prompt") or item.get("title") or item.get("objective")
+                )
                 if not isinstance(prompt, str) or not prompt.strip():
-                    fail(f"task {task_id} needs prompt or title")
+                    fail(f"task {task_id} needs prompt, title, or objective")
                 access = item.get("access", "read-only")
                 if access not in {"read-only", "default-tools"}:
                     fail(f"task {task_id}: access must be read-only or default-tools")
@@ -531,6 +834,10 @@ def create_workflow(
                         "INSERT INTO dependencies VALUES(?,?,?)",
                         (workflow_id, item["id"], parent),
                     )
+            db.execute(
+                "INSERT INTO workflow_specs VALUES(?,?,?)",
+                (workflow_id, json.dumps(spec), now()),
+            )
             event(db, workflow_id, "workflow.created", detail={"name": name})
     except sqlite3.IntegrityError as error:
         if "workflows.id" in str(error):
@@ -783,6 +1090,69 @@ def print_workflow(
             print(
                 f"{task['state']:12} {task['id']:24} {task['phase'] or '-':12} {task['title']}"
             )
+
+
+def stored_spec(db: sqlite3.Connection, workflow_id: str) -> dict[str, Any]:
+    row = db.execute(
+        "SELECT spec FROM workflow_specs WHERE workflow_id=?", (workflow_id,)
+    ).fetchone()
+    if row:
+        try:
+            value = json.loads(row["spec"])
+        except ValueError as error:
+            fail(f"stored workflow spec is invalid: {workflow_id}: {error}")
+        if isinstance(value, dict):
+            return value
+    workflow = workflow_row(db, workflow_id)
+    tasks = db.execute(
+        "SELECT * FROM tasks WHERE workflow_id=? ORDER BY id", (workflow_id,)
+    ).fetchall()
+    dependencies = db.execute(
+        "SELECT task_id, depends_on FROM dependencies WHERE workflow_id=?",
+        (workflow_id,),
+    ).fetchall()
+    parents: dict[str, list[str]] = {task["id"]: [] for task in tasks}
+    for dependency in dependencies:
+        parents[dependency["task_id"]].append(dependency["depends_on"])
+    return {
+        "id": workflow["id"],
+        "name": workflow["name"],
+        "cwd": workflow["cwd"],
+        "tmuxSession": workflow["tmux_session"],
+        "maxConcurrency": workflow["max_concurrency"],
+        "tasks": [
+            {
+                "id": task["id"],
+                "title": task["title"],
+                "prompt": task["prompt"],
+                "access": task["access"],
+                "state": task["state"],
+                "resources": parse_resources(task["resources"]),
+                "dependsOn": parents[task["id"]],
+            }
+            for task in tasks
+        ],
+    }
+
+
+def command_workflow_validate(args: argparse.Namespace) -> None:
+    spec = (
+        load_spec(args.file)
+        if args.file
+        else stored_spec(db_connect(args.database), args.id)
+    )
+    findings = validate_spec(spec)
+    print(
+        json.dumps(
+            {
+                "valid": not any(item["severity"] == "error" for item in findings),
+                "findings": findings,
+            },
+            indent=2,
+        )
+    )
+    if any(item["severity"] == "error" for item in findings):
+        raise SystemExit(1)
 
 
 def command_workflow_create(args: argparse.Namespace) -> None:
@@ -1098,6 +1468,13 @@ def build_parser() -> argparse.ArgumentParser:
         "workflow", help="create, schedule, and observe workflows"
     )
     wf = workflow.add_subparsers(dest="workflow_command", required=True)
+    validate = wf.add_parser(
+        "validate", help="validate a workflow spec or stored workflow"
+    )
+    source = validate.add_mutually_exclusive_group(required=True)
+    source.add_argument("--file")
+    source.add_argument("id", nargs="?")
+    validate.set_defaults(handler=command_workflow_validate)
     create = wf.add_parser("create", help="create a draft workflow from JSON")
     create.add_argument("--file", required=True)
     create.add_argument("--tmux-session")
