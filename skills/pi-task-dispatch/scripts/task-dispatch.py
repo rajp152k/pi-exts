@@ -912,51 +912,64 @@ def workflow_row(db: sqlite3.Connection, workflow_id: str) -> sqlite3.Row:
     return row
 
 
+def project_terminal_manifest(
+    db: sqlite3.Connection,
+    workflow_id: str,
+    attempt: sqlite3.Row,
+    manifest: dict[str, Any],
+) -> None:
+    """Project an authoritative terminal manifest exactly once."""
+    state = manifest["state"]
+    task_state = {
+        "completed": "done",
+        "cancelled": "cancelled",
+        "failed": "failed",
+        "lost": "failed",
+    }[state]
+    db.execute(
+        "UPDATE attempts SET state=?, finished_at=?, exit_code=?, error=? WHERE id=?",
+        (
+            task_state,
+            manifest.get("finishedAt", now()),
+            manifest.get("exitCode"),
+            manifest.get("error"),
+            attempt["id"],
+        ),
+    )
+    db.execute(
+        "UPDATE tasks SET state=?, phase=?, updated_at=? WHERE workflow_id=? AND id=?",
+        (task_state, None, now(), workflow_id, attempt["task_id"]),
+    )
+    db.execute(
+        "UPDATE dispatch_outbox SET state=?,updated_at=? WHERE attempt_id=?",
+        (state, now(), attempt["id"]),
+    )
+    db.execute(
+        "DELETE FROM resource_leases WHERE workflow_id=? AND attempt_id=?",
+        (workflow_id, attempt["id"]),
+    )
+    event(
+        db,
+        workflow_id,
+        "attempt.finished",
+        task_id=attempt["task_id"],
+        attempt_id=attempt["id"],
+        detail={"state": task_state},
+    )
+
+
 def refresh(db: sqlite3.Connection, workflow_id: str) -> None:
-    """Project worker manifests into task/attempt state, then resolve dependencies."""
+    """Project authoritative terminal worker manifests and resolve dependencies."""
     for attempt in db.execute(
-        "SELECT * FROM attempts WHERE workflow_id=? AND state='in_progress'",
+        "SELECT * FROM attempts WHERE workflow_id=? AND state IN ('in_progress','orphaned')",
         (workflow_id,),
     ):
         manifest_path = Path(attempt["run_dir"]) / "manifest.json"
         if not manifest_path.exists():
             continue
         manifest = describe(Path(attempt["run_dir"]))
-        state = manifest["state"]
-        if state not in TERMINAL_STATES:
-            continue
-        task_state = {
-            "completed": "done",
-            "cancelled": "cancelled",
-            "failed": "failed",
-            "lost": "failed",
-        }[state]
-        db.execute(
-            "UPDATE attempts SET state=?, finished_at=?, exit_code=?, error=? WHERE id=?",
-            (
-                task_state,
-                manifest.get("finishedAt", now()),
-                manifest.get("exitCode"),
-                manifest.get("error"),
-                attempt["id"],
-            ),
-        )
-        db.execute(
-            "UPDATE tasks SET state=?, phase=?, updated_at=? WHERE workflow_id=? AND id=?",
-            (task_state, None, now(), workflow_id, attempt["task_id"]),
-        )
-        db.execute(
-            "DELETE FROM resource_leases WHERE workflow_id=? AND attempt_id=?",
-            (workflow_id, attempt["id"]),
-        )
-        event(
-            db,
-            workflow_id,
-            "attempt.finished",
-            task_id=attempt["task_id"],
-            attempt_id=attempt["id"],
-            detail={"state": task_state},
-        )
+        if manifest["state"] in TERMINAL_STATES:
+            project_terminal_manifest(db, workflow_id, attempt, manifest)
     queued = db.execute(
         "SELECT id FROM tasks WHERE workflow_id=? AND state='queued'", (workflow_id,)
     ).fetchall()
@@ -989,76 +1002,105 @@ def refresh(db: sqlite3.Connection, workflow_id: str) -> None:
 def reconcile_dispatch_outbox(
     db: sqlite3.Connection, workflow_id: str, root: Path
 ) -> None:
-    """Finish durable dispatch intents; never launch twice after an ambiguous launch."""
-    pending = db.execute(
-        "SELECT o.*, a.*, t.prompt, t.cwd, t.access FROM dispatch_outbox o "
-        "JOIN attempts a ON a.id=o.attempt_id "
-        "JOIN tasks t ON t.workflow_id=o.workflow_id AND t.id=o.task_id "
-        "WHERE o.workflow_id=? AND o.state='pending' ORDER BY o.created_at",
+    """Recover every nonterminal attempt without duplicating an ambiguous launch."""
+    items = db.execute(
+        "SELECT a.*, o.state AS outbox_state, t.prompt, t.cwd, t.access FROM attempts a "
+        "LEFT JOIN dispatch_outbox o ON o.attempt_id=a.id "
+        "JOIN tasks t ON t.workflow_id=a.workflow_id AND t.id=a.task_id "
+        "WHERE a.workflow_id=? AND a.state='in_progress' "
+        "ORDER BY a.started_at",
         (workflow_id,),
     ).fetchall()
     workflow = workflow_row(db, workflow_id)
-    for item in pending:
+    for item in items:
+        outcome = "lost"
         run_dir = Path(item["run_dir"])
         manifest_path = run_dir / "manifest.json"
         if manifest_path.exists():
             manifest = load_manifest(run_dir)
-            if manifest.get("state") == "running":
-                db.execute(
-                    "UPDATE dispatch_outbox SET state='launched',updated_at=? WHERE attempt_id=?",
-                    (now(), item["attempt_id"]),
-                )
-                event(
-                    db,
-                    workflow_id,
-                    "dispatch.reconciled",
-                    task_id=item["task_id"],
-                    attempt_id=item["attempt_id"],
-                    detail={"state": "launched"},
-                )
+            if manifest.get("state") in TERMINAL_STATES:
+                project_terminal_manifest(db, workflow_id, item, manifest)
                 continue
-            # tmux may have succeeded immediately before a crash, but no target was
-            # durably recorded. Failing closed is safer than a duplicate worker.
-            error = "tmux launch outcome was not durably recorded"
-        else:
-            try:
-                launch_worker(
-                    task_id=item["task_id"],
-                    session=workflow["tmux_session"],
-                    cwd=Path(item["cwd"]),
-                    task=item["prompt"],
-                    read_only=item["access"] == "read-only",
-                    root=root,
-                    workflow={"id": workflow_id, "attemptId": item["attempt_id"]},
-                    run_dir=run_dir,
-                )
-                manifest = load_manifest(run_dir)
+            target = manifest.get("tmux", {}).get("windowId") or item["tmux_pane"]
+            if target and window_exists(target):
                 db.execute(
                     "UPDATE attempts SET tmux_pane=? WHERE id=?",
-                    (manifest["tmux"]["paneId"], item["attempt_id"]),
+                    (manifest.get("tmux", {}).get("paneId"), item["id"]),
                 )
-                db.execute(
-                    "UPDATE dispatch_outbox SET state='launched',updated_at=? WHERE attempt_id=?",
-                    (now(), item["attempt_id"]),
-                )
-                event(
-                    db,
-                    workflow_id,
-                    "attempt.dispatched",
-                    task_id=item["task_id"],
-                    attempt_id=item["attempt_id"],
-                    detail={"runDir": str(run_dir), "pane": manifest["tmux"]["paneId"]},
-                )
+                if item["outbox_state"] == "pending":
+                    db.execute(
+                        "UPDATE dispatch_outbox SET state='launched',updated_at=? WHERE attempt_id=?",
+                        (now(), item["id"]),
+                    )
                 continue
-            except SystemExit as launch_error:
-                error = str(launch_error)
+            error = "tmux target disappeared before worker reported completion"
+        else:
+            target = item["tmux_pane"]
+            if target and window_exists(target):
+                if item["state"] != "orphaned":
+                    error = "worker target exists but manifest is missing"
+                    db.execute(
+                        "UPDATE attempts SET state='orphaned',error=? WHERE id=?",
+                        (error, item["id"]),
+                    )
+                    db.execute(
+                        "UPDATE dispatch_outbox SET state='orphaned',updated_at=?,error=? WHERE attempt_id=?",
+                        (now(), error, item["id"]),
+                    )
+                    event(
+                        db,
+                        workflow_id,
+                        "attempt.orphaned",
+                        task_id=item["task_id"],
+                        attempt_id=item["id"],
+                        detail={"target": target},
+                    )
+                continue
+            if item["outbox_state"] == "pending" and not run_dir.exists():
+                try:
+                    launch_worker(
+                        task_id=item["task_id"],
+                        session=workflow["tmux_session"],
+                        cwd=Path(item["cwd"]),
+                        task=item["prompt"],
+                        read_only=item["access"] == "read-only",
+                        root=root,
+                        workflow={"id": workflow_id, "attemptId": item["id"]},
+                        run_dir=run_dir,
+                    )
+                    manifest = load_manifest(run_dir)
+                    db.execute(
+                        "UPDATE attempts SET tmux_pane=? WHERE id=?",
+                        (manifest["tmux"]["paneId"], item["id"]),
+                    )
+                    db.execute(
+                        "UPDATE dispatch_outbox SET state='launched',updated_at=? WHERE attempt_id=?",
+                        (now(), item["id"]),
+                    )
+                    event(
+                        db,
+                        workflow_id,
+                        "attempt.dispatched",
+                        task_id=item["task_id"],
+                        attempt_id=item["id"],
+                        detail={
+                            "runDir": str(run_dir),
+                            "pane": manifest["tmux"]["paneId"],
+                        },
+                    )
+                    continue
+                except SystemExit as launch_error:
+                    outcome = "failed"
+                    error = str(launch_error)
+            else:
+                error = "worker manifest and tmux target are missing"
         db.execute(
-            "UPDATE dispatch_outbox SET state='failed',updated_at=?,error=? WHERE attempt_id=?",
-            (now(), error, item["attempt_id"]),
+            "UPDATE dispatch_outbox SET state=?,updated_at=?,error=? WHERE attempt_id=?",
+            (outcome, now(), error, item["id"]),
         )
         db.execute(
-            "UPDATE attempts SET state='failed',finished_at=?,error=? WHERE id=?",
-            (now(), error, item["attempt_id"]),
+            "UPDATE attempts SET state=?,finished_at=?,error=? WHERE id=?",
+            (outcome, now(), error, item["id"]),
         )
         db.execute(
             "UPDATE tasks SET state='failed',phase=NULL,updated_at=? WHERE workflow_id=? AND id=?",
@@ -1066,16 +1108,24 @@ def reconcile_dispatch_outbox(
         )
         db.execute(
             "DELETE FROM resource_leases WHERE workflow_id=? AND attempt_id=?",
-            (workflow_id, item["attempt_id"]),
+            (workflow_id, item["id"]),
         )
         event(
             db,
             workflow_id,
             "dispatch.failed",
             task_id=item["task_id"],
-            attempt_id=item["attempt_id"],
-            detail={"reason": error},
+            attempt_id=item["id"],
+            detail={"outcome": outcome, "reason": error},
         )
+
+
+def reconcile_workflow(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
+    """Run the idempotent recovery pass without scheduling new work."""
+    with db:
+        refresh(db, workflow_id)
+        reconcile_dispatch_outbox(db, workflow_id, root)
+        refresh(db, workflow_id)
 
 
 def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
@@ -1086,7 +1136,7 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
     try:
         with db:
             workflow = workflow_row(db, workflow_id)
-            refresh(db, workflow_id)
+            reconcile_workflow(db, workflow_id, root)
             if workflow["state"] == "draft":
                 db.execute(
                     "UPDATE workflows SET state='running',updated_at=? WHERE id=?",
@@ -1190,7 +1240,7 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
                 slots -= 1
         # tmux is external: its outcome is reconciled from the durable intent.
         with db:
-            reconcile_dispatch_outbox(db, workflow_id, root)
+            reconcile_workflow(db, workflow_id, root)
             remaining = db.execute(
                 "SELECT COUNT(*) FROM tasks WHERE workflow_id=? AND state NOT IN ('done','failed','blocked','cancelled')",
                 (workflow_id,),
@@ -1366,6 +1416,12 @@ def command_workflow_import(args: argparse.Namespace) -> None:
 def command_workflow_tick(args: argparse.Namespace) -> None:
     db = db_connect(args.database)
     tick(db, args.id, Path(args.root).expanduser())
+    print_workflow(db, args.id)
+
+
+def command_workflow_reconcile(args: argparse.Namespace) -> None:
+    db = db_connect(args.database)
+    reconcile_workflow(db, args.id, Path(args.root).expanduser())
     print_workflow(db, args.id)
 
 
@@ -1637,6 +1693,7 @@ def build_parser() -> argparse.ArgumentParser:
     for name, handler, help_text in [
         ("start", command_workflow_tick, "start and schedule eligible work"),
         ("tick", command_workflow_tick, "reconcile and schedule once"),
+        ("reconcile", command_workflow_reconcile, "recover durable workflow state"),
     ]:
         item = wf.add_parser(name, help=help_text)
         item.add_argument("id")

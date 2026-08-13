@@ -60,9 +60,9 @@
 
 - [x] Add a SQLite scheduler lease/lock so concurrent `tick`/`watch --drive` processes cannot dispatch the same task.
 - [x] Use transactional outbox/reconciliation semantics around attempt creation, tmux launch, resource leasing, and manifest updates.
-- [ ] Detect orphaned tmux/RPC workers after crashes and reconcile to a durable terminal or recoverable state.
-- [ ] Release leases only after authoritative completion/reconciliation, including cancellation and worker loss.
-- [ ] Add restart/recovery tests for interruption at every dispatch lifecycle boundary.
+- [x] Detect orphaned tmux/RPC workers after crashes and reconcile to a durable terminal or recoverable state.
+- [x] Release leases only after authoritative completion/reconciliation, including cancellation and worker loss.
+- [x] Add restart/recovery tests for interrupted manifest/target/outbox recovery boundaries.
 
 ## 9. Graph authoring assistance
 
