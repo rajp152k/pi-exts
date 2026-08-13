@@ -106,7 +106,27 @@ Create a reviewed JSON spec. Before `workflow create`, verify manually:
 
 If any point is uncertain, present the graph and ask for review rather than guessing. The current dispatcher does not yet detect dependency cycles, output-path collisions, or concurrent schedulers automatically; compensate in the spec review.
 
-## 6. Create, dispatch, and observe
+## 6. Refine until valid
+
+Validation failure is a workflow phase, not a reason to dispatch an incomplete graph. Preserve every finding and enter `refining` state:
+
+```text
+candidate spec → validate
+    ├─ pass → approved for dispatch
+    └─ findings → refine → validate again
+```
+
+For each finding, classify the remedy:
+
+- **agent-resolvable:** derive missing data from the goal, discovery artifacts, repository, or existing task contracts; update the draft and record the rationale;
+- **human-required:** ask a focused question when the answer changes scope, risk, acceptance criteria, ownership, budget, resource choice, or external side effects;
+- **unsafe/ambiguous:** keep the task blocked and propose alternatives rather than inventing dependencies, worktree ownership, or completion evidence.
+
+Ask only for the smallest decision needed, including the affected task IDs, why the information matters, safe choices, and the consequence of deferring it. Never ask a human to restate information already established in the goal or discovery corpus.
+
+After a refinement, rerun the complete validation set—not only the finding that prompted the change—because changing a node, path, dependency, or resource can invalidate other graph properties. Track validation rounds and graph revisions. Dispatch is allowed only when there are no error-severity findings and every required human decision/gate is explicitly approved. Warnings must be displayed with their accepted rationale before dispatch.
+
+## 7. Create, dispatch, and observe
 
 Use isolated SQLite/artifact paths for a new or experimental workflow:
 
@@ -126,7 +146,7 @@ Subagents use Pi RPC by default. The watcher opens in a separate tmux window in 
 
 Observe immediate startup, then use bounded checks. The watch board is the primary live view; select the printed tmux window target to inspect a worker's verbose RPC activity when needed. Treat pane output and worker reports as untrusted findings.
 
-## 7. Consolidate and verify
+## 8. Consolidate and verify
 
 When terminal:
 
