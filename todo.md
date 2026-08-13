@@ -13,18 +13,18 @@
 ## 2. Declared outputs and write-path ownership
 
 - [x] Add task metadata for `inputs`, `outputs`, and `writePaths` (files/globs/subsystems).
-- [ ] Validate that concurrently eligible writer tasks do not claim overlapping output/write paths.
-- [ ] Require a single owner for shared integration files such as indexes, manifests, lockfiles, generated assets, and migrations.
+- [x] Validate that concurrently eligible writer tasks do not claim overlapping output/write paths.
+- [x] Require a single owner for shared integration files such as indexes, manifests, lockfiles, generated assets, and migrations.
 - [ ] Surface write-path conflicts as scheduler blocking reasons and in the TUI.
-- [ ] Record actual changed paths after attempts and compare them with declared ownership.
+- [x] Record actual changed paths after attempts and compare them with declared ownership.
 
 ## 3. Worktree lifecycle management
 
-- [ ] Add optional workflow-managed Git worktree creation for `default-tools` tasks.
-- [ ] Persist worktree path, branch, base revision, owner task, and cleanup policy in SQLite/artifacts.
-- [ ] Create a unique `worktree:<name>` resource lease automatically for each writer.
-- [ ] Add commands to inspect, preserve, clean, merge, or cherry-pick worktree results after review.
-- [ ] Refuse automatic merge when the worktree is dirty, diverged unexpectedly, has failed verification, or conflicts with another result.
+- [x] Add optional workflow-managed Git worktree creation for `default-tools` tasks.
+- [x] Persist worktree path, branch, base revision, owner task, and cleanup policy in SQLite/artifacts.
+- [x] Create a unique `worktree:<name>` resource lease automatically for each writer.
+- [x] Add commands to inspect, preserve, clean, merge, or cherry-pick worktree results after review.
+- [x] Refuse automatic merge when the worktree is dirty, diverged unexpectedly, has failed verification, or conflicts with another result.
 
 ## 4. Workflow-context and artifact injection
 

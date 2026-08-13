@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import suppress
 import curses
 import hashlib
 import json
@@ -440,7 +441,7 @@ def db_connect(value: str) -> sqlite3.Connection:
     db.execute("PRAGMA foreign_keys = ON")
     db.executescript("""
     CREATE TABLE IF NOT EXISTS workflows (id TEXT PRIMARY KEY, name TEXT NOT NULL, cwd TEXT NOT NULL, tmux_session TEXT NOT NULL, max_concurrency INTEGER NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS tasks (workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, id TEXT NOT NULL, title TEXT NOT NULL, prompt TEXT NOT NULL, cwd TEXT NOT NULL, access TEXT NOT NULL, priority INTEGER NOT NULL DEFAULT 0, resources TEXT NOT NULL DEFAULT '[]', state TEXT NOT NULL, phase TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(workflow_id,id));
+    CREATE TABLE IF NOT EXISTS tasks (workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, id TEXT NOT NULL, title TEXT NOT NULL, prompt TEXT NOT NULL, cwd TEXT NOT NULL, access TEXT NOT NULL, priority INTEGER NOT NULL DEFAULT 0, resources TEXT NOT NULL DEFAULT '[]', state TEXT NOT NULL, phase TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, managed_worktrees INTEGER NOT NULL DEFAULT 0, cleanup_policy TEXT NOT NULL DEFAULT 'clean', PRIMARY KEY(workflow_id,id));
     CREATE TABLE IF NOT EXISTS dependencies (workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, depends_on TEXT NOT NULL, PRIMARY KEY(workflow_id,task_id,depends_on), FOREIGN KEY(workflow_id,task_id) REFERENCES tasks(workflow_id,id) ON DELETE CASCADE, FOREIGN KEY(workflow_id,depends_on) REFERENCES tasks(workflow_id,id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, run_dir TEXT NOT NULL, state TEXT NOT NULL, tmux_pane TEXT, started_at TEXT NOT NULL, finished_at TEXT, exit_code INTEGER, error TEXT);
     CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL, task_id TEXT, attempt_id TEXT, type TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);
@@ -454,8 +455,19 @@ def db_connect(value: str) -> sqlite3.Connection:
     CREATE TABLE IF NOT EXISTS gate_approvals (workflow_id TEXT NOT NULL, gate_id TEXT NOT NULL, revision INTEGER NOT NULL, decision TEXT NOT NULL, approver TEXT NOT NULL, rationale TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(workflow_id,gate_id,revision));
     CREATE TABLE IF NOT EXISTS task_gates (workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, gate_type TEXT NOT NULL, PRIMARY KEY(workflow_id,task_id), FOREIGN KEY(workflow_id,task_id) REFERENCES tasks(workflow_id,id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS task_declarations (workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, inputs TEXT NOT NULL DEFAULT '[]', outputs TEXT NOT NULL DEFAULT '[]', write_paths TEXT NOT NULL DEFAULT '[]', handoff TEXT NOT NULL DEFAULT '', PRIMARY KEY(workflow_id,task_id), FOREIGN KEY(workflow_id,task_id) REFERENCES tasks(workflow_id,id) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS managed_worktrees (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id) ON DELETE CASCADE, workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, source_path TEXT NOT NULL, worktree_path TEXT NOT NULL, branch TEXT NOT NULL, base_revision TEXT NOT NULL, owner TEXT NOT NULL, cleanup_policy TEXT NOT NULL DEFAULT 'clean', verification_state TEXT NOT NULL DEFAULT 'pending', changed_paths TEXT NOT NULL DEFAULT '[]', preserved_at TEXT, cleaned_at TEXT);
     CREATE INDEX IF NOT EXISTS events_workflow_id ON events(workflow_id,id); CREATE INDEX IF NOT EXISTS attempts_task ON attempts(workflow_id,task_id); CREATE INDEX IF NOT EXISTS dispatch_outbox_workflow ON dispatch_outbox(workflow_id,state);
     """)
+    # Existing databases predate managed worktrees. SQLite only supports additive
+    # migrations here, so retain legacy manual-worktree workflows unchanged.
+    with suppress(sqlite3.OperationalError):
+        db.execute(
+            "ALTER TABLE tasks ADD COLUMN managed_worktrees INTEGER NOT NULL DEFAULT 0"
+        )
+    with suppress(sqlite3.OperationalError):
+        db.execute(
+            "ALTER TABLE tasks ADD COLUMN cleanup_policy TEXT NOT NULL DEFAULT 'clean'"
+        )
     return db
 
 
@@ -671,6 +683,17 @@ def validate_workflow_spec(spec: Any) -> list[dict[str, Any]]:
                 )
             )
         access = task.get("access", "read-only")
+        managed = task.get("managedWorktrees", spec.get("managedWorktrees", False))
+        if not isinstance(managed, bool):
+            findings.append(
+                finding(
+                    "invalid-managed-worktrees",
+                    "error",
+                    f"task {task_id} managedWorktrees must be boolean",
+                    task_ids=[task_id],
+                    remediation="Set managedWorktrees to true or false.",
+                )
+            )
         if access not in {"read-only", "default-tools"}:
             findings.append(
                 finding(
@@ -746,6 +769,7 @@ def validate_workflow_spec(spec: Any) -> list[dict[str, Any]]:
         if (
             kind != "gate"
             and access == "default-tools"
+            and not managed
             and not any(
                 isinstance(r, str) and r.startswith("worktree:")
                 for r in task.get("resources", [])
@@ -839,6 +863,9 @@ def validate_workflow_spec(spec: Any) -> list[dict[str, Any]]:
                 stack.extend(dependencies[node])
         return False
 
+    # Every shared writer integration path must be explicitly ordered, even when
+    # individual worktree resources differ.  This is intentionally stricter than
+    # runtime leases: integration is a separate serialization concern.
     writers = [
         (task_id, task)
         for task_id, task in valid.items()
@@ -873,6 +900,15 @@ def validate_workflow_spec(spec: Any) -> list[dict[str, Any]]:
                                 f"writers {left_id} and {right_id} can concurrently claim {left_path!r}",
                                 task_ids=[left_id, right_id],
                                 remediation="Assign one owner or add an explicit dependency between the writers.",
+                            )
+                        )
+                        findings.append(
+                            finding(
+                                "concurrent-writer-output-overlap",
+                                "error",
+                                f"writers {left_id} and {right_id} overlap at {left_path!r}",
+                                task_ids=[left_id, right_id],
+                                remediation="Add explicit ordering for shared integration paths.",
                             )
                         )
                         break
@@ -952,8 +988,14 @@ def create_workflow(
                 task_cwd = Path(item.get("cwd") or cwd).expanduser().resolve()
                 if not task_cwd.is_dir():
                     fail(f"task {task_id}: cwd is not a directory: {task_cwd}")
+                managed = bool(
+                    item.get("managedWorktrees", spec.get("managedWorktrees", False))
+                )
+                cleanup_policy = item.get("cleanupPolicy", "clean")
+                if managed and access == "default-tools":
+                    resources = [*resources, f"worktree:managed:{task_id}"]
                 db.execute(
-                    "INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         workflow_id,
                         task_id,
@@ -967,6 +1009,8 @@ def create_workflow(
                         None,
                         now(),
                         now(),
+                        int(managed),
+                        str(cleanup_policy),
                     ),
                 )
                 if item.get("kind", "task") == "gate":
@@ -1075,6 +1119,131 @@ def workflow_row(db: sqlite3.Connection, workflow_id: str) -> sqlite3.Row:
     return row
 
 
+def git_run(cwd: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    """Small Git boundary; deliberately easy to mock in workflow tests."""
+    return subprocess.run(
+        ["git", "-C", str(cwd), *arguments], text=True, capture_output=True
+    )
+
+
+def git_value(cwd: Path, *arguments: str) -> str:
+    result = git_run(cwd, *arguments)
+    if result.returncode:
+        fail(result.stderr.strip() or "git command failed")
+    return result.stdout.strip()
+
+
+def source_is_clean(source: Path) -> bool:
+    return git_value(source, "rev-parse", "--is-inside-work-tree") == str(
+        True
+    ).lower() and not git_value(source, "status", "--porcelain")
+
+
+def create_managed_worktree(
+    db: sqlite3.Connection,
+    workflow_id: str,
+    task: sqlite3.Row,
+    attempt_id: str,
+    root: Path,
+    managed: bool,
+    cleanup_policy: str,
+) -> Path:
+    """Create an isolated writer checkout only after proving the source is clean."""
+    source = Path(task["cwd"]).resolve()
+    if not managed:
+        return source
+    if not source_is_clean(source):
+        fail("managed worktree source must be a clean Git checkout")
+    base = git_value(source, "rev-parse", "HEAD")
+    worktree = root / "worktrees" / workflow_id / task["id"] / attempt_id
+    branch = f"pi-task/{workflow_id}/{task['id']}/{attempt_id[:12]}"
+    result = git_run(source, "worktree", "add", "-b", branch, str(worktree), base)
+    if result.returncode:
+        fail(result.stderr.strip() or "git worktree add failed")
+    db.execute(
+        "INSERT INTO managed_worktrees VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            attempt_id,
+            workflow_id,
+            task["id"],
+            str(source),
+            str(worktree),
+            branch,
+            base,
+            f"{workflow_id}:{task['id']}",
+            cleanup_policy,
+            "pending",
+            "[]",
+            None,
+            None,
+        ),
+    )
+    event(
+        db,
+        workflow_id,
+        "worktree.created",
+        task_id=task["id"],
+        attempt_id=attempt_id,
+        detail={"path": str(worktree), "branch": branch, "baseRevision": base},
+    )
+    return worktree
+
+
+def audit_managed_worktree(
+    db: sqlite3.Connection, workflow_id: str, attempt: sqlite3.Row
+) -> bool:
+    row = db.execute(
+        "SELECT * FROM managed_worktrees WHERE attempt_id=?", (attempt["id"],)
+    ).fetchone()
+    if not row:
+        return True
+    worktree = Path(row["worktree_path"])
+    try:
+        changed = git_value(
+            worktree, "diff", "--name-only", f"{row['base_revision']}..HEAD"
+        ).splitlines()
+        clean = not git_value(worktree, "status", "--porcelain")
+    except SystemExit:
+        changed, clean = [], False
+    declaration = db.execute(
+        "SELECT outputs,write_paths FROM task_declarations WHERE workflow_id=? AND task_id=?",
+        (workflow_id, attempt["task_id"]),
+    ).fetchone()
+    try:
+        allowed = json.loads(declaration["outputs"]) + json.loads(
+            declaration["write_paths"]
+        )
+    except (TypeError, KeyError, json.JSONDecodeError):
+        allowed = []
+
+    def permitted(path: str) -> bool:
+        return any(
+            path == item.rstrip("/") or path.startswith(item.rstrip("/") + "/")
+            for item in allowed
+        )
+
+    mismatches = [path for path in changed if not permitted(path)]
+    verified = clean and not mismatches
+    db.execute(
+        "UPDATE managed_worktrees SET verification_state=?,changed_paths=? WHERE attempt_id=?",
+        ("verified" if verified else "failed", json.dumps(changed), attempt["id"]),
+    )
+    event(
+        db,
+        workflow_id,
+        "worktree.audit",
+        task_id=attempt["task_id"],
+        attempt_id=attempt["id"],
+        detail={
+            "changedPaths": changed,
+            "mismatches": mismatches,
+            "clean": clean,
+            "verified": verified,
+        },
+    )
+    return verified
+
+
 def project_terminal_manifest(
     db: sqlite3.Connection,
     workflow_id: str,
@@ -1089,6 +1258,9 @@ def project_terminal_manifest(
         "failed": "failed",
         "lost": "failed",
     }[state]
+    if task_state == "done" and not audit_managed_worktree(db, workflow_id, attempt):
+        task_state = "failed"
+        manifest = {**manifest, "error": "managed worktree verification failed"}
     db.execute(
         "UPDATE attempts SET state=?, finished_at=?, exit_code=?, error=? WHERE id=?",
         (
@@ -1269,6 +1441,9 @@ def build_attempt_context(
     root: Path,
 ) -> dict[str, Any]:
     task_id = task["task_id"]
+    managed = db.execute(
+        "SELECT * FROM managed_worktrees WHERE attempt_id=?", (attempt_id,)
+    ).fetchone()
     declaration = db.execute(
         "SELECT * FROM task_declarations WHERE workflow_id=? AND task_id=?",
         (workflow_id, task_id),
@@ -1330,7 +1505,8 @@ def build_attempt_context(
         "taskId": task_id,
         "attemptId": attempt_id,
         "artifactRoot": str(root),
-        "effectiveCwd": task["cwd"],
+        "effectiveCwd": managed["worktree_path"] if managed else task["cwd"],
+        "managedWorktree": dict(managed) if managed else None,
         "declarations": declarations,
         "handoff": declaration["handoff"],
         "injectedArtifacts": artifacts,
@@ -1342,8 +1518,10 @@ def reconcile_dispatch_outbox(
 ) -> None:
     """Recover every nonterminal attempt without duplicating an ambiguous launch."""
     items = db.execute(
-        "SELECT a.*, o.state AS outbox_state, t.prompt, t.cwd, t.access FROM attempts a "
+        "SELECT a.*, o.state AS outbox_state, t.prompt, t.cwd, t.access, "
+        "m.worktree_path FROM attempts a "
         "LEFT JOIN dispatch_outbox o ON o.attempt_id=a.id "
+        "LEFT JOIN managed_worktrees m ON m.attempt_id=a.id "
         "JOIN tasks t ON t.workflow_id=a.workflow_id AND t.id=a.task_id "
         "WHERE a.workflow_id=? AND a.state='in_progress' "
         "ORDER BY a.started_at",
@@ -1399,7 +1577,7 @@ def reconcile_dispatch_outbox(
                     launch_worker(
                         task_id=item["task_id"],
                         session=workflow["tmux_session"],
-                        cwd=Path(item["cwd"]),
+                        cwd=Path(item["worktree_path"] or item["cwd"]),
                         task=item["prompt"],
                         read_only=item["access"] == "read-only",
                         root=root,
@@ -1598,6 +1776,35 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
                     "UPDATE tasks SET state='in_progress',phase='starting',updated_at=? WHERE workflow_id=? AND id=?",
                     (now(), workflow_id, task["id"]),
                 )
+                if task["access"] == "default-tools" and task["managed_worktrees"]:
+                    try:
+                        create_managed_worktree(
+                            db,
+                            workflow_id,
+                            task,
+                            attempt_id,
+                            root,
+                            True,
+                            task["cleanup_policy"],
+                        )
+                    except SystemExit as error:
+                        db.execute(
+                            "UPDATE attempts SET state='failed',finished_at=?,error=? WHERE id=?",
+                            (now(), str(error), attempt_id),
+                        )
+                        db.execute(
+                            "UPDATE tasks SET state='failed',phase=NULL,updated_at=? WHERE workflow_id=? AND id=?",
+                            (now(), workflow_id, task["id"]),
+                        )
+                        event(
+                            db,
+                            workflow_id,
+                            "worktree.create-failed",
+                            task_id=task["id"],
+                            attempt_id=attempt_id,
+                            detail={"error": str(error)},
+                        )
+                        continue
                 for resource in resources:
                     db.execute(
                         "INSERT INTO resource_leases VALUES(?,?,?,?)",
@@ -1998,6 +2205,92 @@ def command_workflow_inspect(args: argparse.Namespace) -> None:
         print("attempt:", json.dumps(dict(attempt), indent=2))
 
 
+def managed_worktree_row(db: sqlite3.Connection, attempt_id: str) -> sqlite3.Row:
+    row = db.execute(
+        "SELECT * FROM managed_worktrees WHERE attempt_id=?", (attempt_id,)
+    ).fetchone()
+    if not row:
+        fail(f"unknown managed worktree attempt {attempt_id}")
+    return row
+
+
+def safe_managed_worktree(row: sqlite3.Row, *, verified: bool = True) -> None:
+    if verified and row["verification_state"] != "verified":
+        fail("managed worktree is unverified or verification failed")
+    path = Path(row["worktree_path"])
+    if not path.is_dir() or not source_is_clean(path):
+        fail("managed worktree is dirty, missing, or not a Git checkout")
+    if git_value(path, "rev-parse", "HEAD") == row["base_revision"]:
+        fail("managed worktree has no committed changes")
+
+
+def command_workflow_worktree(args: argparse.Namespace) -> None:
+    db = db_connect(args.database)
+    row = managed_worktree_row(db, args.attempt)
+    if args.worktree_action == "inspect":
+        print(json.dumps(dict(row), indent=2))
+        return
+    if args.worktree_action == "preserve":
+        with db:
+            db.execute(
+                "UPDATE managed_worktrees SET cleanup_policy='preserve',preserved_at=? WHERE attempt_id=?",
+                (now(), args.attempt),
+            )
+            event(
+                db,
+                row["workflow_id"],
+                "worktree.preserved",
+                task_id=row["task_id"],
+                attempt_id=args.attempt,
+            )
+        return
+    safe_managed_worktree(row)
+    worktree, source = Path(row["worktree_path"]), Path(row["source_path"])
+    if args.worktree_action == "clean":
+        result = git_run(source, "worktree", "remove", str(worktree))
+        if result.returncode:
+            fail(result.stderr.strip() or "git worktree remove failed")
+        with db:
+            db.execute(
+                "UPDATE managed_worktrees SET cleaned_at=? WHERE attempt_id=?",
+                (now(), args.attempt),
+            )
+            event(
+                db,
+                row["workflow_id"],
+                "worktree.cleaned",
+                task_id=row["task_id"],
+                attempt_id=args.attempt,
+            )
+        return
+    # Integration is deliberately explicit; source must still be exactly at base.
+    if (
+        not source_is_clean(source)
+        or git_value(source, "rev-parse", "HEAD") != row["base_revision"]
+    ):
+        fail("source checkout is dirty or diverged from the managed worktree base")
+    if args.worktree_action == "merge":
+        result = git_run(source, "merge", "--no-ff", "--no-commit", row["branch"])
+        if result.returncode:
+            git_run(source, "merge", "--abort")
+            fail(result.stderr.strip() or "merge conflict; aborted")
+        # Never automatically commit a merge.
+        git_run(source, "merge", "--abort")
+        fail("merge was verified then aborted; review and merge manually")
+    if args.worktree_action == "cherry-pick":
+        commits = git_value(
+            worktree, "rev-list", "--reverse", f"{row['base_revision']}..HEAD"
+        ).splitlines()
+        if not commits:
+            fail("no commits available to cherry-pick")
+        result = git_run(source, "cherry-pick", "--no-commit", *commits)
+        if result.returncode:
+            git_run(source, "cherry-pick", "--abort")
+            fail(result.stderr.strip() or "cherry-pick conflict; aborted")
+        git_run(source, "cherry-pick", "--abort")
+        fail("cherry-pick was verified then aborted; review and apply manually")
+
+
 def command_workflow_cancel(args: argparse.Namespace) -> None:
     db = db_connect(args.database)
     with db:
@@ -2268,6 +2561,16 @@ def build_parser() -> argparse.ArgumentParser:
     inspect.add_argument("id")
     inspect.add_argument("task")
     inspect.set_defaults(handler=command_workflow_inspect)
+    worktree = wf.add_parser(
+        "worktree", help="inspect or safely manage a managed worktree"
+    )
+    worktree_subcommands = worktree.add_subparsers(
+        dest="worktree_action", required=True
+    )
+    for worktree_action in ("inspect", "preserve", "clean", "merge", "cherry-pick"):
+        operation = worktree_subcommands.add_parser(worktree_action)
+        operation.add_argument("attempt")
+        operation.set_defaults(handler=command_workflow_worktree)
     cancel = wf.add_parser("cancel", help="cancel a task or whole workflow")
     cancel.add_argument("id")
     cancel.add_argument("task", nargs="?")
