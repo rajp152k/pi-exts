@@ -54,7 +54,8 @@ function registerTraceShowTool(pi: ExtensionAPI) {
 		name: "traces_show",
 		label: "Traces",
 		description: `Load a particular agent trace through the traces CLI. Accepts a traces.com link or bare trace ID. Returns user and agent messages by default, bounded to 60 events and truncated to ${DEFAULT_MAX_LINES} lines or ${formatSize(DEFAULT_MAX_BYTES)}.`,
-		promptSnippet: "Load a traces.com trace link or trace ID using the traces CLI",
+		promptSnippet:
+			"Load a traces.com trace link or trace ID using the traces CLI",
 		promptGuidelines: [
 			"Use traces_show whenever the user pastes a traces.com link or supplies a trace ID. Do not use fetch_content or web tools for trace links.",
 			"When the user asks about a local, recent, previous, or current trace without supplying a link or ID, use traces_search first, then traces_show on the matching trace ID when its full conversation is needed.",
@@ -135,8 +136,7 @@ function registerTraceSearchTool(pi: ExtensionAPI) {
 			),
 			includeTools: Type.Optional(
 				Type.Boolean({
-					description:
-						"Include tool calls/results in searched event text",
+					description: "Include tool calls/results in searched event text",
 				}),
 			),
 			limit: Type.Optional(
@@ -215,8 +215,10 @@ export default function piTraces(pi: ExtensionAPI) {
 		}
 
 		const asksForLocalTrace =
-			/\b(?:trace|traces)\b/i.test(event.text) &&
-			/\b(?:search|find|inspect|open|read|look|investigate|evaluate|local|recent|previous|current|this|last)\b/i.test(
+			/\b(?:search|find|list)\b(?:\s+\w+){0,3}\s+\btraces?\b/i.test(
+				event.text,
+			) ||
+			/\b(?:inspect|open|read|review|show|analy[sz]e)\b(?:\s+\w+){0,3}\s+\b(?:this|local|recent|previous|current|last)\s+traces?\b/i.test(
 				event.text,
 			);
 		if (!asksForLocalTrace) return { action: "continue" };
