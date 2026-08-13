@@ -6,12 +6,20 @@ Personal Pi extensions, organized under the `rp152kpi:<name>` namespace.
 
 - [Firefox browser-agent integration](plans/firefox-browser-agent.md)
 
+## Documentation
+
+- [Documentation index](docs/README.md)
+- [Package installation and maintenance](docs/package-guide.md)
+- [Integrations and skills](docs/integrations.md)
+- [Task-dispatch workflows](docs/task-dispatch.md)
+
 ## Extensions
 
 - [`rp152kpi:notify`](extensions/rp152kpi:notify): shows a top-right tmux popup when Pi is ready for the next prompt.
 - [`rp152kpi:firefox`](extensions/rp152kpi:firefox): provides status and lifecycle controls for the live Firefox browser-agent integration.
 - [`tmux-control`](skills/tmux-control): directs Pi to safely inspect and control local tmux sessions through the tmux CLI.
-- [`pi-task-dispatch`](skills/pi-task-dispatch): dispatches and mandatorily monitors bounded one-shot Pi workers in tmux, retaining durable handoffs for consolidation.
+- [`pi-task-dispatch`](skills/pi-task-dispatch): dispatches and monitors tmux-backed Pi workers, with SQLite-persisted dependency workflows, event observability, and a live board/Gantt watch.
+- [`orchestrate`](skills/orchestrate): turns a goal and discovery todo corpus into a reviewed, safely parallel task-dispatch graph and observable execution.
 - [`rp152kpi:traces`](extensions/rp152kpi:traces): searches local trace indexes and loads bounded trace views through the `traces` CLI.
 
 ## Install

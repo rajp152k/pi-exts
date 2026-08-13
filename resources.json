@@ -9,7 +9,8 @@
   "tmux": {
     "skills": [
       "skills/tmux-control/SKILL.md",
-      "skills/pi-task-dispatch/SKILL.md"
+      "skills/pi-task-dispatch/SKILL.md",
+      "skills/orchestrate/SKILL.md"
     ]
   },
   "traces": {
