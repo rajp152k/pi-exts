@@ -29,7 +29,9 @@ class SchedulerSafetyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name) / "runs"
-        self.db = self.dispatcher.db_connect(str(Path(self.temporary.name) / "db.sqlite"))
+        self.db = self.dispatcher.db_connect(
+            str(Path(self.temporary.name) / "db.sqlite")
+        )
         self.spec = {
             "id": "scheduler-fixture",
             "cwd": str(Path.cwd()),
@@ -49,15 +51,21 @@ class SchedulerSafetyTests(unittest.TestCase):
         workflow_id = self.spec["id"]
         self.assertEqual(
             "owner-one",
-            self.dispatcher.acquire_scheduler_lease(self.db, workflow_id, owner="owner-one"),
+            self.dispatcher.acquire_scheduler_lease(
+                self.db, workflow_id, owner="owner-one"
+            ),
         )
         self.assertIsNone(
-            self.dispatcher.acquire_scheduler_lease(self.db, workflow_id, owner="owner-two")
+            self.dispatcher.acquire_scheduler_lease(
+                self.db, workflow_id, owner="owner-two"
+            )
         )
         self.dispatcher.release_scheduler_lease(self.db, workflow_id, "owner-one")
         self.assertEqual(
             "owner-two",
-            self.dispatcher.acquire_scheduler_lease(self.db, workflow_id, owner="owner-two"),
+            self.dispatcher.acquire_scheduler_lease(
+                self.db, workflow_id, owner="owner-two"
+            ),
         )
 
     def test_expired_scheduler_lease_is_reclaimed(self) -> None:
@@ -87,9 +95,10 @@ class SchedulerSafetyTests(unittest.TestCase):
             )
             return run_dir
 
-        with patch.object(
-            self.dispatcher, "launch_worker", side_effect=launch
-        ), patch.object(self.dispatcher, "window_exists", return_value=True):
+        with (
+            patch.object(self.dispatcher, "launch_worker", side_effect=launch),
+            patch.object(self.dispatcher, "window_exists", return_value=True),
+        ):
             self.dispatcher.tick(self.db, self.spec["id"], self.root)
             self.dispatcher.tick(self.db, self.spec["id"], self.root)
         self.assertEqual(["one"], launches)
@@ -112,31 +121,63 @@ class SchedulerSafetyTests(unittest.TestCase):
             )
             self.db.execute(
                 "INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?,?,?)",
-                ("attempt", self.spec["id"], "one", str(self.root / "missing"), "in_progress", None, self.dispatcher.now(), None, None, None),
+                (
+                    "attempt",
+                    self.spec["id"],
+                    "one",
+                    str(self.root / "missing"),
+                    "in_progress",
+                    None,
+                    self.dispatcher.now(),
+                    None,
+                    None,
+                    None,
+                ),
             )
             self.db.execute(
                 "INSERT INTO dispatch_outbox VALUES(?,?,?,?,?,?,?,NULL)",
-                ("attempt", self.spec["id"], "one", str(self.root / "missing"), "pending", self.dispatcher.now(), self.dispatcher.now()),
+                (
+                    "attempt",
+                    self.spec["id"],
+                    "one",
+                    str(self.root / "missing"),
+                    "pending",
+                    self.dispatcher.now(),
+                    self.dispatcher.now(),
+                ),
             )
             self.db.execute(
                 "INSERT INTO resource_leases VALUES(?,?,?,?)",
                 (self.spec["id"], "repo:fixture", "attempt", self.dispatcher.now()),
             )
-        with self.db, patch.object(
-            self.dispatcher, "launch_worker", side_effect=SystemExit("tmux unavailable")
+        with (
+            self.db,
+            patch.object(
+                self.dispatcher,
+                "launch_worker",
+                side_effect=SystemExit("tmux unavailable"),
+            ),
         ):
-            self.dispatcher.reconcile_dispatch_outbox(self.db, self.spec["id"], self.root)
+            self.dispatcher.reconcile_dispatch_outbox(
+                self.db, self.spec["id"], self.root
+            )
         self.assertEqual(
             "failed",
-            self.db.execute("SELECT state FROM attempts WHERE id='attempt'").fetchone()[0],
+            self.db.execute("SELECT state FROM attempts WHERE id='attempt'").fetchone()[
+                0
+            ],
         )
         self.assertEqual(
             0,
-            self.db.execute("SELECT COUNT(*) FROM resource_leases WHERE attempt_id='attempt'").fetchone()[0],
+            self.db.execute(
+                "SELECT COUNT(*) FROM resource_leases WHERE attempt_id='attempt'"
+            ).fetchone()[0],
         )
         self.assertEqual(
             "failed",
-            self.db.execute("SELECT state FROM dispatch_outbox WHERE attempt_id='attempt'").fetchone()[0],
+            self.db.execute(
+                "SELECT state FROM dispatch_outbox WHERE attempt_id='attempt'"
+            ).fetchone()[0],
         )
 
     def test_authoritative_completion_releases_resource_lease(self) -> None:
@@ -144,7 +185,11 @@ class SchedulerSafetyTests(unittest.TestCase):
         run_dir.mkdir(parents=True)
         self.dispatcher.write_json(
             run_dir / "manifest.json",
-            {"state": "completed", "finishedAt": self.dispatcher.now(), "tmux": {"windowId": "%none"}},
+            {
+                "state": "completed",
+                "finishedAt": self.dispatcher.now(),
+                "tmux": {"windowId": "%none"},
+            },
         )
         with self.db:
             self.db.execute(
@@ -153,16 +198,34 @@ class SchedulerSafetyTests(unittest.TestCase):
             )
             self.db.execute(
                 "INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?,?,?)",
-                ("completed-attempt", self.spec["id"], "one", str(run_dir), "in_progress", None, self.dispatcher.now(), None, None, None),
+                (
+                    "completed-attempt",
+                    self.spec["id"],
+                    "one",
+                    str(run_dir),
+                    "in_progress",
+                    None,
+                    self.dispatcher.now(),
+                    None,
+                    None,
+                    None,
+                ),
             )
             self.db.execute(
                 "INSERT INTO resource_leases VALUES(?,?,?,?)",
-                (self.spec["id"], "repo:fixture", "completed-attempt", self.dispatcher.now()),
+                (
+                    self.spec["id"],
+                    "repo:fixture",
+                    "completed-attempt",
+                    self.dispatcher.now(),
+                ),
             )
             self.dispatcher.refresh(self.db, self.spec["id"])
         self.assertEqual(
             0,
-            self.db.execute("SELECT COUNT(*) FROM resource_leases WHERE attempt_id='completed-attempt'").fetchone()[0],
+            self.db.execute(
+                "SELECT COUNT(*) FROM resource_leases WHERE attempt_id='completed-attempt'"
+            ).fetchone()[0],
         )
 
 
