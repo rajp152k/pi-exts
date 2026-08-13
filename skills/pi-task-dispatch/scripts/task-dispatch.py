@@ -448,10 +448,95 @@ def db_connect(value: str) -> sqlite3.Connection:
     CREATE TABLE IF NOT EXISTS scheduler_leases (workflow_id TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS dispatch_outbox (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id) ON DELETE CASCADE, workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, run_dir TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, error TEXT);
     CREATE TABLE IF NOT EXISTS workflow_specs (workflow_id TEXT PRIMARY KEY REFERENCES workflows(id) ON DELETE CASCADE, spec TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS workflow_revisions (workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, revision INTEGER NOT NULL, spec TEXT NOT NULL, content_hash TEXT NOT NULL, rationale TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, PRIMARY KEY(workflow_id,revision), UNIQUE(workflow_id,content_hash));
+    CREATE TABLE IF NOT EXISTS revision_findings (workflow_id TEXT NOT NULL, revision INTEGER NOT NULL, finding TEXT NOT NULL, PRIMARY KEY(workflow_id,revision,finding), FOREIGN KEY(workflow_id,revision) REFERENCES workflow_revisions(workflow_id,revision) ON DELETE CASCADE);
+    CREATE TABLE IF NOT EXISTS workflow_current_revisions (workflow_id TEXT PRIMARY KEY REFERENCES workflows(id) ON DELETE CASCADE, revision INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS gate_approvals (workflow_id TEXT NOT NULL, gate_id TEXT NOT NULL, revision INTEGER NOT NULL, decision TEXT NOT NULL, approver TEXT NOT NULL, rationale TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(workflow_id,gate_id,revision));
+    CREATE TABLE IF NOT EXISTS task_gates (workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, gate_type TEXT NOT NULL, PRIMARY KEY(workflow_id,task_id), FOREIGN KEY(workflow_id,task_id) REFERENCES tasks(workflow_id,id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS task_declarations (workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, inputs TEXT NOT NULL DEFAULT '[]', outputs TEXT NOT NULL DEFAULT '[]', write_paths TEXT NOT NULL DEFAULT '[]', handoff TEXT NOT NULL DEFAULT '', PRIMARY KEY(workflow_id,task_id), FOREIGN KEY(workflow_id,task_id) REFERENCES tasks(workflow_id,id) ON DELETE CASCADE);
     CREATE INDEX IF NOT EXISTS events_workflow_id ON events(workflow_id,id); CREATE INDEX IF NOT EXISTS attempts_task ON attempts(workflow_id,task_id); CREATE INDEX IF NOT EXISTS dispatch_outbox_workflow ON dispatch_outbox(workflow_id,state);
     """)
     return db
+
+
+def canonical_spec(spec: dict[str, Any]) -> tuple[str, str]:
+    """Return the immutable, whitespace-independent representation of a spec."""
+    content = json.dumps(
+        spec, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return content, hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def persist_revision(
+    db: sqlite3.Connection,
+    workflow_id: str,
+    spec: dict[str, Any],
+    *,
+    rationale: str = "",
+) -> int:
+    """Append a revision and its deterministic validation snapshot."""
+    content, content_hash = canonical_spec(spec)
+    old = db.execute(
+        "SELECT revision FROM workflow_revisions WHERE workflow_id=? AND content_hash=?",
+        (workflow_id, content_hash),
+    ).fetchone()
+    if old:
+        fail("revision content is unchanged")
+    revision = db.execute(
+        "SELECT COALESCE(MAX(revision),0)+1 FROM workflow_revisions WHERE workflow_id=?",
+        (workflow_id,),
+    ).fetchone()[0]
+    db.execute(
+        "INSERT INTO workflow_revisions VALUES(?,?,?,?,?,?)",
+        (workflow_id, revision, content, content_hash, rationale, now()),
+    )
+    for item in validate_spec(spec):
+        db.execute(
+            "INSERT INTO revision_findings VALUES(?,?,?)",
+            (workflow_id, revision, json.dumps(item, sort_keys=True)),
+        )
+    db.execute(
+        "INSERT OR REPLACE INTO workflow_current_revisions VALUES(?,?)",
+        (workflow_id, revision),
+    )
+    return revision
+
+
+def current_revision(db: sqlite3.Connection, workflow_id: str) -> int:
+    """Lazily give legacy workflows their compatible initial revision."""
+    row = db.execute(
+        "SELECT revision FROM workflow_current_revisions WHERE workflow_id=?",
+        (workflow_id,),
+    ).fetchone()
+    if row:
+        return row["revision"]
+    legacy = db.execute(
+        "SELECT spec FROM workflow_specs WHERE workflow_id=?", (workflow_id,)
+    ).fetchone()
+    if legacy:
+        try:
+            spec = json.loads(legacy["spec"])
+        except (TypeError, json.JSONDecodeError) as error:
+            fail(f"stored workflow spec is invalid: {workflow_id}: {error}")
+    else:
+        spec = stored_spec(db, workflow_id)
+    return persist_revision(db, workflow_id, spec, rationale="legacy initial revision")
+
+
+def revision_findings(
+    db: sqlite3.Connection, workflow_id: str, revision: int | None = None
+) -> list[dict[str, Any]]:
+    revision = revision or current_revision(db, workflow_id)
+    results: list[dict[str, Any]] = []
+    for row in db.execute(
+        "SELECT finding FROM revision_findings WHERE workflow_id=? AND revision=? ORDER BY finding",
+        (workflow_id, revision),
+    ):
+        try:
+            results.append(json.loads(row["finding"]))
+        except (TypeError, json.JSONDecodeError) as error:
+            fail(f"stored revision finding is invalid: {workflow_id}: {error}")
+    return results
 
 
 def event(
@@ -562,6 +647,29 @@ def validate_workflow_spec(spec: Any) -> list[dict[str, Any]]:
             continue
         seen.add(task_id)
         valid[task_id] = task
+        kind = task.get("kind", "task")
+        if kind not in {"task", "gate"}:
+            findings.append(
+                finding(
+                    "invalid-task-kind",
+                    "error",
+                    f"task {task_id} has invalid kind {kind!r}",
+                    task_ids=[task_id],
+                    remediation="Use task or gate.",
+                )
+            )
+        if kind == "gate" and (
+            not isinstance(task.get("gateType"), str) or not task["gateType"].strip()
+        ):
+            findings.append(
+                finding(
+                    "missing-gate-type",
+                    "error",
+                    f"gate {task_id} lacks gateType",
+                    task_ids=[task_id],
+                    remediation="Set gateType, for example write_dispatch.",
+                )
+            )
         access = task.get("access", "read-only")
         if access not in {"read-only", "default-tools"}:
             findings.append(
@@ -597,7 +705,7 @@ def validate_workflow_spec(spec: Any) -> list[dict[str, Any]]:
             for field in ("objective", "deliverable", "completionEvidence", "handoff")
             if not isinstance(task.get(field), str) or not task[field].strip()
         ]
-        if missing:
+        if kind != "gate" and missing:
             findings.append(
                 finding(
                     "missing-task-contract",
@@ -607,9 +715,11 @@ def validate_workflow_spec(spec: Any) -> list[dict[str, Any]]:
                     remediation="Add bounded objective, deliverable, completionEvidence, and handoff fields.",
                 )
             )
-        if not isinstance(
-            task.get("prompt", task.get("title", "")), str
-        ) and not isinstance(task.get("objective"), str):
+        if (
+            kind != "gate"
+            and not isinstance(task.get("prompt", task.get("title", "")), str)
+            and not isinstance(task.get("objective"), str)
+        ):
             findings.append(
                 finding(
                     "missing-task-prompt",
@@ -633,9 +743,13 @@ def validate_workflow_spec(spec: Any) -> list[dict[str, Any]]:
                         remediation=f"Provide {field} as a string list.",
                     )
                 )
-        if access == "default-tools" and not any(
-            isinstance(r, str) and r.startswith("worktree:")
-            for r in task.get("resources", [])
+        if (
+            kind != "gate"
+            and access == "default-tools"
+            and not any(
+                isinstance(r, str) and r.startswith("worktree:")
+                for r in task.get("resources", [])
+            )
         ):
             findings.append(
                 finding(
@@ -728,7 +842,8 @@ def validate_workflow_spec(spec: Any) -> list[dict[str, Any]]:
     writers = [
         (task_id, task)
         for task_id, task in valid.items()
-        if task.get("access", "read-only") == "default-tools"
+        if task.get("kind", "task") != "gate"
+        and task.get("access", "read-only") == "default-tools"
     ]
     for index, (left_id, left) in enumerate(writers):
         for right_id, right in writers[index + 1 :]:
@@ -822,6 +937,8 @@ def create_workflow(
                 prompt = (
                     item.get("prompt") or item.get("title") or item.get("objective")
                 )
+                if item.get("kind", "task") == "gate":
+                    prompt = prompt or f"Gate: {item['gateType']}"
                 if not isinstance(prompt, str) or not prompt.strip():
                     fail(f"task {task_id} needs prompt, title, or objective")
                 access = item.get("access", "read-only")
@@ -852,6 +969,11 @@ def create_workflow(
                         now(),
                     ),
                 )
+                if item.get("kind", "task") == "gate":
+                    db.execute(
+                        "INSERT INTO task_gates VALUES(?,?,?)",
+                        (workflow_id, task_id, str(item["gateType"])),
+                    )
                 db.execute(
                     "INSERT INTO task_declarations VALUES(?,?,?,?,?,?)",
                     (
@@ -875,7 +997,15 @@ def create_workflow(
                 "INSERT INTO workflow_specs VALUES(?,?,?)",
                 (workflow_id, json.dumps(spec), now()),
             )
-            event(db, workflow_id, "workflow.created", detail={"name": name})
+            revision = persist_revision(
+                db, workflow_id, spec, rationale="initial creation"
+            )
+            event(
+                db,
+                workflow_id,
+                "workflow.created",
+                detail={"name": name, "revision": revision},
+            )
     except sqlite3.IntegrityError as error:
         if "workflows.id" in str(error):
             fail(f"workflow already exists: {workflow_id}")
@@ -991,6 +1121,33 @@ def project_terminal_manifest(
     )
 
 
+def gate_decision(db: sqlite3.Connection, workflow_id: str, gate_id: str) -> str | None:
+    row = db.execute(
+        "SELECT decision FROM gate_approvals WHERE workflow_id=? AND gate_id=? AND revision=?",
+        (workflow_id, gate_id, current_revision(db, workflow_id)),
+    ).fetchone()
+    return row["decision"] if row else None
+
+
+def has_write_dispatch_gate(
+    db: sqlite3.Connection, workflow_id: str, task_id: str
+) -> bool:
+    """True when a write_dispatch gate is anywhere upstream of task_id."""
+    row = db.execute(
+        """
+        WITH RECURSIVE parents(id) AS (
+          SELECT depends_on FROM dependencies WHERE workflow_id=? AND task_id=?
+          UNION
+          SELECT d.depends_on FROM dependencies d JOIN parents p ON d.task_id=p.id
+          WHERE d.workflow_id=?
+        ) SELECT 1 FROM parents p JOIN task_gates g ON g.workflow_id=? AND g.task_id=p.id
+        WHERE g.gate_type='write_dispatch' LIMIT 1
+    """,
+        (workflow_id, task_id, workflow_id, workflow_id),
+    ).fetchone()
+    return row is not None
+
+
 def refresh(db: sqlite3.Connection, workflow_id: str) -> None:
     """Project authoritative terminal worker manifests and resolve dependencies."""
     for attempt in db.execute(
@@ -1007,6 +1164,37 @@ def refresh(db: sqlite3.Connection, workflow_id: str) -> None:
         "SELECT id FROM tasks WHERE workflow_id=? AND state='queued'", (workflow_id,)
     ).fetchall()
     for row in queued:
+        gate = db.execute(
+            "SELECT gate_type FROM task_gates WHERE workflow_id=? AND task_id=?",
+            (workflow_id, row["id"]),
+        ).fetchone()
+        if gate:
+            decision = gate_decision(db, workflow_id, row["id"])
+            if decision == "approved":
+                db.execute(
+                    "UPDATE tasks SET state='done',phase='approved',updated_at=? WHERE workflow_id=? AND id=?",
+                    (now(), workflow_id, row["id"]),
+                )
+                event(
+                    db,
+                    workflow_id,
+                    "gate.approved",
+                    task_id=row["id"],
+                    detail={"gateType": gate["gate_type"]},
+                )
+            elif decision == "rejected":
+                db.execute(
+                    "UPDATE tasks SET state='blocked',phase='rejected',updated_at=? WHERE workflow_id=? AND id=?",
+                    (now(), workflow_id, row["id"]),
+                )
+                event(
+                    db,
+                    workflow_id,
+                    "gate.rejected",
+                    task_id=row["id"],
+                    detail={"gateType": gate["gate_type"]},
+                )
+            continue
         parents = db.execute(
             "SELECT t.state FROM dependencies d JOIN tasks t ON t.workflow_id=d.workflow_id AND t.id=d.depends_on WHERE d.workflow_id=? AND d.task_id=?",
             (workflow_id, row["id"]),
@@ -1091,13 +1279,16 @@ def build_attempt_context(
         "write_paths": "[]",
         "handoff": "",
     }
+    # Gates are deliberately attempt-less and therefore cannot contribute reports.
     parents = db.execute(
         "SELECT a.* FROM dependencies d JOIN attempts a ON a.workflow_id=d.workflow_id AND a.task_id=d.depends_on "
-        "WHERE d.workflow_id=? AND d.task_id=? AND a.state='done' ORDER BY d.depends_on, a.started_at, a.id",
+        "LEFT JOIN task_gates g ON g.workflow_id=d.workflow_id AND g.task_id=d.depends_on "
+        "WHERE d.workflow_id=? AND d.task_id=? AND a.state='done' AND g.task_id IS NULL ORDER BY d.depends_on, a.started_at, a.id",
         (workflow_id, task_id),
     ).fetchall()
     expected = db.execute(
-        "SELECT depends_on FROM dependencies WHERE workflow_id=? AND task_id=? ORDER BY depends_on",
+        "SELECT d.depends_on FROM dependencies d LEFT JOIN task_gates g ON g.workflow_id=d.workflow_id AND g.task_id=d.depends_on "
+        "WHERE d.workflow_id=? AND d.task_id=? AND g.task_id IS NULL ORDER BY d.depends_on",
         (workflow_id, task_id),
     ).fetchall()
     if len(parents) != len(expected):
@@ -1299,6 +1490,21 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
         with db:
             workflow = workflow_row(db, workflow_id)
             reconcile_workflow(db, workflow_id, root)
+            workflow = workflow_row(db, workflow_id)
+            findings = revision_findings(db, workflow_id)
+            if workflow["state"] == "refining" or any(
+                item["severity"] == "error" for item in findings
+            ):
+                event(
+                    db,
+                    workflow_id,
+                    "scheduler.refused",
+                    detail={
+                        "state": workflow["state"],
+                        "errors": sum(item["severity"] == "error" for item in findings),
+                    },
+                )
+                return
             if workflow["state"] == "draft":
                 db.execute(
                     "UPDATE workflows SET state='running',updated_at=? WHERE id=?",
@@ -1316,6 +1522,24 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
                 (workflow_id,),
             ).fetchall()
             for task in ready:
+                if slots <= 0:
+                    break
+                if db.execute(
+                    "SELECT 1 FROM task_gates WHERE workflow_id=? AND task_id=?",
+                    (workflow_id, task["id"]),
+                ).fetchone():
+                    continue
+                if task["access"] == "default-tools" and has_write_dispatch_gate(
+                    db, workflow_id, task["id"]
+                ):
+                    # A ready writer cannot pass an unapproved upstream gate: refresh only
+                    # marks the gate done for a current-revision approval.
+                    parents = db.execute(
+                        "SELECT t.state FROM dependencies d JOIN tasks t ON t.workflow_id=d.workflow_id AND t.id=d.depends_on WHERE d.workflow_id=? AND d.task_id=?",
+                        (workflow_id, task["id"]),
+                    ).fetchall()
+                    if any(parent["state"] != "done" for parent in parents):
+                        continue
                 if slots <= 0:
                     break
                 resources = parse_resources(task["resources"])
@@ -1450,13 +1674,20 @@ def print_workflow(
 
 
 def stored_spec(db: sqlite3.Connection, workflow_id: str) -> dict[str, Any]:
-    row = db.execute(
-        "SELECT spec FROM workflow_specs WHERE workflow_id=?", (workflow_id,)
+    revision = db.execute(
+        "SELECT r.spec FROM workflow_current_revisions c JOIN workflow_revisions r ON r.workflow_id=c.workflow_id AND r.revision=c.revision WHERE c.workflow_id=?",
+        (workflow_id,),
     ).fetchone()
+    row = (
+        revision
+        or db.execute(
+            "SELECT spec FROM workflow_specs WHERE workflow_id=?", (workflow_id,)
+        ).fetchone()
+    )
     if row:
         try:
             value = json.loads(row["spec"])
-        except ValueError as error:
+        except (TypeError, json.JSONDecodeError) as error:
             fail(f"stored workflow spec is invalid: {workflow_id}: {error}")
         if isinstance(value, dict):
             return value
@@ -1521,6 +1752,139 @@ def command_workflow_create(args: argparse.Namespace) -> None:
         cwd_override=args.cwd,
     )
     print(workflow_id)
+
+
+def command_workflow_findings(args: argparse.Namespace) -> None:
+    db = db_connect(args.database)
+    revision = current_revision(db, args.id)
+    print(
+        json.dumps(
+            {
+                "workflowId": args.id,
+                "revision": revision,
+                "findings": revision_findings(db, args.id, revision),
+            },
+            indent=2,
+        )
+    )
+
+
+def command_workflow_refine(args: argparse.Namespace) -> None:
+    db = db_connect(args.database)
+    revision = current_revision(db, args.id)
+    findings = revision_findings(db, args.id, revision)
+    with db:
+        db.execute(
+            "UPDATE workflows SET state='refining',updated_at=? WHERE id=?",
+            (now(), args.id),
+        )
+        event(
+            db,
+            args.id,
+            "workflow.refining",
+            detail={
+                "revision": revision,
+                "errors": sum(item["severity"] == "error" for item in findings),
+                "warnings": sum(item["severity"] == "warning" for item in findings),
+            },
+        )
+    print(
+        json.dumps(
+            {"workflowId": args.id, "revision": revision, "findings": findings},
+            indent=2,
+        )
+    )
+
+
+def command_workflow_revise(args: argparse.Namespace) -> None:
+    db = db_connect(args.database)
+    spec = load_spec(args.file)
+    workflow_row(db, args.id)
+    with db:
+        revision = persist_revision(db, args.id, spec, rationale=args.rationale)
+        findings = revision_findings(db, args.id, revision)
+        # Any change requires a fresh review; decisions are scoped to their revision.
+        state = "refining" if findings else "draft"
+        db.execute(
+            "UPDATE workflows SET state=?,updated_at=? WHERE id=?",
+            (state, now(), args.id),
+        )
+        event(
+            db,
+            args.id,
+            "workflow.revised",
+            detail={
+                "revision": revision,
+                "contentHash": canonical_spec(spec)[1],
+                "rationale": args.rationale,
+            },
+        )
+    print(
+        json.dumps(
+            {"workflowId": args.id, "revision": revision, "findings": findings},
+            indent=2,
+        )
+    )
+
+
+def command_workflow_gates(args: argparse.Namespace) -> None:
+    db = db_connect(args.database)
+    revision = current_revision(db, args.id)
+    rows = db.execute(
+        "SELECT g.task_id,g.gate_type,a.decision,a.approver,a.rationale FROM task_gates g LEFT JOIN gate_approvals a ON a.workflow_id=g.workflow_id AND a.gate_id=g.task_id AND a.revision=? WHERE g.workflow_id=? ORDER BY g.task_id",
+        (revision, args.id),
+    ).fetchall()
+    print(
+        json.dumps(
+            {
+                "workflowId": args.id,
+                "revision": revision,
+                "gates": [
+                    {
+                        "id": row["task_id"],
+                        "gateType": row["gate_type"],
+                        "decision": row["decision"],
+                        "approver": row["approver"],
+                        "rationale": row["rationale"],
+                    }
+                    for row in rows
+                ],
+            },
+            indent=2,
+        )
+    )
+
+
+def command_workflow_gate_decision(args: argparse.Namespace) -> None:
+    db = db_connect(args.database)
+    revision = current_revision(db, args.id)
+    gate = db.execute(
+        "SELECT gate_type FROM task_gates WHERE workflow_id=? AND task_id=?",
+        (args.id, args.gate_id),
+    ).fetchone()
+    if not gate:
+        fail(f"unknown gate: {args.gate_id}")
+    with db:
+        db.execute(
+            "INSERT OR REPLACE INTO gate_approvals VALUES(?,?,?,?,?,?,?)",
+            (
+                args.id,
+                args.gate_id,
+                revision,
+                args.decision,
+                args.approver,
+                args.rationale,
+                now(),
+            ),
+        )
+        event(
+            db,
+            args.id,
+            f"gate.{args.decision}",
+            task_id=args.gate_id,
+            detail={"revision": revision, "approver": args.approver},
+        )
+    print(args.gate_id)
 
 
 def markdown_spec(
@@ -1843,6 +2207,35 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--tmux-session")
     create.add_argument("--cwd")
     create.set_defaults(handler=command_workflow_create)
+    findings = wf.add_parser(
+        "findings", help="show validation findings for the current revision"
+    )
+    findings.add_argument("id")
+    findings.set_defaults(handler=command_workflow_findings)
+    refine = wf.add_parser(
+        "refine", help="mark a workflow refining and report unresolved findings"
+    )
+    refine.add_argument("id")
+    refine.set_defaults(handler=command_workflow_refine)
+    revise = wf.add_parser("revise", help="append an immutable workflow-spec revision")
+    revise.add_argument("id")
+    revise.add_argument("--file", required=True)
+    revise.add_argument("--rationale", required=True)
+    revise.set_defaults(handler=command_workflow_revise)
+    gates = wf.add_parser("gates", help="show current-revision gate decisions")
+    gates.add_argument("id")
+    gates.set_defaults(handler=command_workflow_gates)
+    for decision in ("approve", "reject"):
+        gate = wf.add_parser(
+            decision, help=f"{decision} a gate for the current revision"
+        )
+        gate.add_argument("id")
+        gate.add_argument("gate_id")
+        gate.add_argument("--approver", required=True)
+        gate.add_argument("--rationale", required=True)
+        gate.set_defaults(
+            handler=command_workflow_gate_decision, decision=f"{decision}d"
+        )
     imported = wf.add_parser(
         "import", help="turn Markdown unchecked todos into an editable JSON spec"
     )

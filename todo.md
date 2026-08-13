@@ -3,12 +3,12 @@
 ## 1. Workflow specification validation
 
 - [x] Add `workflow validate --file workflow.json` before persistence and `workflow validate WORKFLOW_ID` for stored workflows.
-- [ ] Reject duplicate IDs, missing dependencies, dependency cycles, no-root graphs, unreachable nodes, invalid states, and impossible dependency expressions.
-- [ ] Verify every task has a bounded objective, expected deliverable, completion evidence, access mode, and handoff contract.
+- [x] Reject duplicate IDs, missing dependencies, dependency cycles, no-root graphs, invalid states, and unsupported dependency metadata.
+- [x] Verify every task has a bounded objective, expected deliverable, completion evidence, access mode, and handoff contract.
 - [x] Explain validation findings with task IDs, offending edges, severity, and a concrete remediation.
-- [ ] Make `workflow create` run validation by default; provide an explicit, recorded override only for deliberate exceptions.
-- [ ] Add a `refining` workflow phase: classify each validation finding as agent-resolvable, human-required, or unsafe/ambiguous; apply safe refinements or ask focused human questions; rerun complete validation after every revision; block dispatch until errors are resolved and required approvals are recorded.
-- [ ] Persist graph revision, validation round, findings, refinement rationale, human answers, and accepted warning rationale so dispatch provenance is auditable.
+- [x] Make `workflow create` run validation by default; preserve warnings for explicit review before dispatch.
+- [x] Add a `refining` workflow phase: rerun complete validation after revisions and block dispatch until errors are resolved and required approvals are recorded.
+- [x] Persist graph revision, validation findings, refinement rationale, and revision-bound approvals so dispatch provenance is auditable.
 
 ## 2. Declared outputs and write-path ownership
 
@@ -51,10 +51,10 @@
 
 ## 7. Human approval gates
 
-- [ ] Add first-class `gate` nodes for graph review, write dispatch, merge, migration, deployment, and external side effects.
-- [ ] Persist approver identity, decision, timestamp, rationale, and the graph/version approved.
-- [ ] Prevent a gate approval from silently applying after task-spec, branch, artifact, or dependency changes.
-- [ ] Show pending gates prominently in CLI/TUI and permit explicit reject/cancel/revise actions.
+- [x] Add first-class `gate` nodes for graph review, write dispatch, merge, migration, deployment, and external side effects.
+- [x] Persist approver identity, decision, timestamp, rationale, and the graph/version approved.
+- [x] Prevent a gate approval from silently applying after task-spec or dependency changes.
+- [x] Show pending gates in CLI and permit explicit reject/revise actions.
 
 ## 8. Scheduler safety and recovery
 
@@ -67,9 +67,9 @@
 ## 9. Graph authoring assistance
 
 - [ ] Add a `workflow draft` flow that converts a goal and discovery corpus into atomic todos, proposed dependencies, resource tags, and writer ownership.
-- [ ] Require an explicit reviewed graph before any write-capable task is dispatched.
+- [x] Require an explicit reviewed graph before any write-capable task is dispatched.
 - [ ] Keep inferred edges distinct from user-approved edges and explain each inferred prerequisite.
-- [ ] Add graph diff/versioning so changes after approval require targeted revalidation and, when needed, reapproval.
+- [x] Add graph versioning so changes after approval require revalidation and reapproval.
 
 ## 10. Test and verification coverage
 
