@@ -13,6 +13,9 @@
       "skills/orchestrate/SKILL.md"
     ]
   },
+  "model": {
+    "skills": ["skills/model/SKILL.md"]
+  },
   "traces": {
     "extensions": ["extensions/rp152kpi:traces/index.ts"],
     "skills": ["skills/pi-traces/SKILL.md"]

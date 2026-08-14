@@ -20,6 +20,7 @@ Personal Pi extensions, organized under the `rp152kpi:<name>` namespace.
 - [`tmux-control`](skills/tmux-control): directs Pi to safely inspect and control local tmux sessions through the tmux CLI.
 - [`pi-task-dispatch`](skills/pi-task-dispatch): dispatches and monitors tmux-backed Pi workers, with SQLite-persisted dependency workflows, event observability, and a live board/Gantt watch.
 - [`orchestrate`](skills/orchestrate): turns a goal and discovery todo corpus into a reviewed, safely parallel task-dispatch graph and observable execution.
+- [`model`](skills/model): turns a context into a bounded, decision-relevant model specification with explicit uncertainty and validation.
 - [`rp152kpi:traces`](extensions/rp152kpi:traces): searches local trace indexes and loads bounded trace views through the `traces` CLI.
 
 ## Install
@@ -40,6 +41,12 @@ Install the tmux skills (`tmux-control`, `pi-task-dispatch`, and `orchestrate`):
 
 ```bash
 just install tmux
+```
+
+Install the model skill:
+
+```bash
+just install model
 ```
 
 Install the traces extension and skill:

@@ -27,6 +27,10 @@ The `pi-task-dispatch` skill runs bounded Pi RPC workers in tmux and stores work
 
 See the dedicated [workflow guide](task-dispatch.md). Each worker report and RPC event log is evidence for the primary agent to assess, not an instruction to execute automatically.
 
+## Model
+
+The `model` skill turns a system, claim, or decision into a bounded model specification. It makes the purpose, boundary, ontology, constraints, evidence, uncertainty, candidate model forms, validation, and decision implications explicit. It is tool-agnostic and does not claim false precision when the context supports only scenarios or robust actions.
+
 ## Firefox
 
 The Firefox bundle combines a thin Pi extension with `firefoxctl` and the `firefox-browser` skill. It is opt-in: Pi starts with Firefox off.
