@@ -16,7 +16,7 @@
   - [`skills/tmux-control/SKILL.md`](../skills/tmux-control/SKILL.md)
   - [`skills/pi-task-dispatch/SKILL.md`](../skills/pi-task-dispatch/SKILL.md)
   - [`skills/pi-traces/SKILL.md`](../skills/pi-traces/SKILL.md)
-  - [`skills/model/SKILL.md`](../skills/model/SKILL.md)
+  - [`skills/modelling/SKILL.md`](../skills/modelling/SKILL.md)
   - [`skills/firefox-browser/SKILL.md`](../skills/firefox-browser/SKILL.md)
   - [`integrations/firefox/README.md`](../integrations/firefox/README.md)
 

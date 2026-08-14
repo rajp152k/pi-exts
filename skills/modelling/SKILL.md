@@ -1,6 +1,6 @@
 ---
-name: model
-description: Frame, build, critique, compare, validate, or use a model of a system, claim, or decision. Use for systems, causal, statistical, optimization, simulation, ontology, uncertainty, or decision-modeling work.
+name: modelling
+description: Frame, build, critique, compare, validate, or use a model of a system, claim, or decision. Use for systems, causal, statistical, optimization, simulation, ontology, uncertainty, or decision-modelling work.
 ---
 
 # Model a system or decision
