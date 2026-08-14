@@ -43,11 +43,11 @@
 
 ## 6. True Gantt, critical path, and observability UI
 
-- [ ] Render proportional attempt bars instead of only a textual recent-attempt summary.
-- [ ] Show task phase, elapsed duration, retries, current tool, resource leases, and cost/token usage where available.
-- [ ] Highlight the critical path, current blockers, ready-but-unscheduled tasks, and scheduler deferral reasons.
-- [ ] Add selectable task details: prompt, dependencies, artifacts, raw RPC event tail, report tail, and tmux target.
-- [ ] Support filtering by task state/resource/agent and a noninteractive export of timeline/event data.
+- [x] Render proportional attempt bars instead of only a textual recent-attempt summary.
+- [x] Show task phase, elapsed duration, retries, current tool, resource leases, and cost/token usage where available.
+- [x] Highlight the critical path, current blockers, ready-but-unscheduled tasks, and scheduler deferral reasons.
+- [x] Add selectable task details: prompt, dependencies, artifacts, raw RPC event tail, report tail, and tmux target.
+- [x] Support filtering by task state/resource/agent and a noninteractive export of timeline/event data.
 
 ## 7. Human approval gates
 

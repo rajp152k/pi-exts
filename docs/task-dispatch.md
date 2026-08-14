@@ -65,7 +65,11 @@ task-dispatch --database "$DB" --root "$ROOT" workflow start repo-scouts
 task-dispatch --database "$DB" --root "$ROOT" workflow watch repo-scouts
 ```
 
-The watcher prints an exact `tmux select-window` command. Its board has Queued, Ready, In progress, Done, Failed, Blocked, and Cancelled columns. The bottom timing line is a compact recent-attempt summary, not a full graphical Gantt chart. Press `r` for an immediate tick and `q` to exit. Pass `--no-drive` to observe without scheduling.
+The watcher prints an exact `tmux select-window` command. Its default board has four equal-width bordered columns: **Queued**, **Ready**, **In progress**, and **Terminated**. Terminal cards retain their state tag (`DONE`, `FAILED`, `CANCELLED`, `BLOCKED`, `ORPHANED`, or `LOST`); cards word-wrap phase, elapsed time, retry count, resource leases, and known tool/token/cost data. Critical-path, blocked, and ready-deferral annotations are visible on cards.
+
+Controls are deliberately display-only except for `r`: `j`/`k` (or arrows) select, `d` shows bounded prompt/dependency/artifact/report/RPC/tmux details, `s`/`f`/`a` cycle state/resource/agent filters, `x` hides terminal cards for this screen only, and `0` restores them. `g` switches to the retained proportional Gantt attempt view. `r` performs an immediate tick and `q` exits. Hiding/resetting never deletes SQLite records or artifacts; use `workflow export` and `workflow events --jsonl` to preserve or export durable history. Pass `--no-drive` to observe without scheduling.
+
+Workflow workers share a dedicated `rpc-<workflow-id>` tmux inspector window. Each attempt gets a pane in that window, which keeps an anchor pane so later attempts can reuse it. The legacy `dispatch` command still opens one window per worker. A failed tmux create/split is recorded by normal outbox reconciliation rather than being treated as a successful launch.
 
 ## Draft a workflow from a goal
 

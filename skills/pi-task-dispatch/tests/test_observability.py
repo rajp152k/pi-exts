@@ -144,6 +144,72 @@ class ObservabilityTests(unittest.TestCase):
         self.assertEqual("fixture", row["workflowId"])
         self.assertEqual("task.ready", row["type"])
 
+    def test_watch_layout_is_bordered_wrapped_and_filterable(self) -> None:
+        projection = self.d.workflow_projection(self.db, "fixture")
+        reader = next(task for task in projection["tasks"] if task["id"] == "reader-a")
+        reader.update(
+            {
+                "state": "failed",
+                "phase": "working",
+                "resources": ["repo:shared"],
+                "currentTool": "very-long-tool-name",
+                "tokens": 12,
+                "cost": "0.01",
+            }
+        )
+        lines, visible = self.d.watch_board_lines(
+            projection,
+            80,
+            "reader-a",
+            {"state": "all", "resource": "all", "agent": "all"},
+            set(),
+        )
+        self.assertEqual("+", lines[0][0])
+        self.assertIn("Terminated", lines[1])
+        self.assertIn("FAILED", "\n".join(lines))
+        self.assertIn("reader-a", visible)
+        _, ready = self.d.watch_board_lines(
+            projection,
+            80,
+            None,
+            {"state": "terminated", "resource": "all", "agent": "all"},
+            set(),
+        )
+        self.assertEqual(["reader-a"], ready)
+        self.assertIn("Gantt", self.d.watch_timeline_lines(projection, 80)[0])
+
+    def test_workflow_workers_reuse_inspector_window_through_tmux_seam(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_tmux(arguments: list[str], **_: Any) -> Any:
+            calls.append(arguments)
+            output = {
+                "list-windows": "",
+                "new-window": "@7\n",
+                "split-window": "@7,%9\n",
+            }[arguments[0]]
+            return type("Result", (), {"stdout": output})()
+
+        with patch.object(self.d, "run_tmux", side_effect=fake_tmux):
+            target = self.d.launch_workflow_rpc_pane("unused", "fixture", ["worker"])
+        self.assertEqual(("@7", "%9"), target)
+        self.assertEqual(
+            ["list-windows", "new-window", "split-window"], [c[0] for c in calls]
+        )
+        calls.clear()
+
+        def fake_existing(arguments: list[str], **_: Any) -> Any:
+            calls.append(arguments)
+            output = (
+                "rpc-fixture\t@7\n" if arguments[0] == "list-windows" else "@7,%10\n"
+            )
+            return type("Result", (), {"stdout": output})()
+
+        with patch.object(self.d, "run_tmux", side_effect=fake_existing):
+            self.d.launch_workflow_rpc_pane("unused", "fixture", ["worker"])
+        # A listed inspector is split, never recreated.
+        self.assertEqual(["list-windows", "split-window"], [c[0] for c in calls])
+
     def test_fake_rpc_stream_settles_and_malformed_fails(self) -> None:
         for name, lines, expected in [
             (

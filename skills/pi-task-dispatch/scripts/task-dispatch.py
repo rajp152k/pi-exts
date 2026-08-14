@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import textwrap
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -182,24 +183,30 @@ def launch_worker(
         "--run-dir",
         str(run_dir),
     ]
-    result = run_tmux(
-        [
-            "new-window",
-            "-d",
-            "-P",
-            "-F",
-            "#{window_id},#{pane_id}",
-            "-t",
-            f"{session}:",
-            "-n",
-            task_id,
-            *command,
-        ]
-    )
-    try:
-        window_id, pane_id = result.stdout.strip().split(",", maxsplit=1)
-    except ValueError:
-        fail(f"unexpected tmux target response: {result.stdout!r}")
+    if workflow:
+        window_id, pane_id = launch_workflow_rpc_pane(
+            session, str(workflow["id"]), command
+        )
+    else:
+        # Preserve the legacy dispatch contract: one worker, one window.
+        result = run_tmux(
+            [
+                "new-window",
+                "-d",
+                "-P",
+                "-F",
+                "#{window_id},#{pane_id}",
+                "-t",
+                f"{session}:",
+                "-n",
+                task_id,
+                *command,
+            ]
+        )
+        try:
+            window_id, pane_id = result.stdout.strip().split(",", maxsplit=1)
+        except ValueError:
+            fail(f"unexpected tmux target response: {result.stdout!r}")
     update_manifest(
         run_dir,
         state="running",
@@ -208,6 +215,62 @@ def launch_worker(
     )
     (run_dir / "launch-ready").touch()
     return run_dir
+
+
+def launch_workflow_rpc_pane(
+    session: str, workflow_id: str, command: list[str]
+) -> tuple[str, str]:
+    """Launch in a reusable per-workflow inspector window via the tmux seam.
+
+    The anchor pane is deliberately left as tmux's normal shell, so completed
+    workers do not destroy the window and future attempts can reuse it.
+    """
+    name = f"rpc-{workflow_id}"[:40]
+    windows = run_tmux(
+        ["list-windows", "-t", session, "-F", "#{window_name}\t#{window_id}"]
+    )
+    window_id = next(
+        (
+            line.split("\t", 1)[1]
+            for line in windows.stdout.splitlines()
+            if line.partition("\t")[0] == name and "\t" in line
+        ),
+        None,
+    )
+    if window_id is None:
+        created = run_tmux(
+            [
+                "new-window",
+                "-d",
+                "-P",
+                "-F",
+                "#{window_id}",
+                "-t",
+                f"{session}:",
+                "-n",
+                name,
+            ]
+        )
+        window_id = created.stdout.strip()
+        if not window_id:
+            fail(f"unexpected tmux inspector response: {created.stdout!r}")
+    result = run_tmux(
+        [
+            "split-window",
+            "-d",
+            "-P",
+            "-F",
+            "#{window_id},#{pane_id}",
+            "-t",
+            window_id,
+            *command,
+        ]
+    )
+    try:
+        returned_window, pane_id = result.stdout.strip().split(",", maxsplit=1)
+    except ValueError:
+        fail(f"unexpected tmux pane response: {result.stdout!r}")
+    return returned_window, pane_id
 
 
 # Legacy single-worker interface ------------------------------------------------
@@ -2548,6 +2611,20 @@ def command_workflow_events(args: argparse.Namespace) -> None:
         time.sleep(args.interval)
 
 
+def attempt_runtime(attempt: dict[str, Any]) -> dict[str, Any]:
+    """Best-effort, bounded runtime metadata; artifacts remain authoritative."""
+    run_dir = Path(attempt["run_dir"])
+    result: dict[str, Any] = {}
+    with suppress(OSError, json.JSONDecodeError):
+        manifest = load_manifest(run_dir)
+        for key in ("agent", "tokens", "cost"):
+            if manifest.get(key) is not None:
+                result[key] = manifest[key]
+    # A worker may persist its current tool in the manifest. Raw RPC remains in
+    # events.jsonl for the selectable detail view; do not guess from malformed data.
+    return result
+
+
 def workflow_projection(db: sqlite3.Connection, workflow_id: str) -> dict[str, Any]:
     """Read model for scripts/UIs; does not mutate or dispatch."""
     workflow = workflow_row(db, workflow_id)
@@ -2603,9 +2680,18 @@ def workflow_projection(db: sqlite3.Connection, workflow_id: str) -> dict[str, A
                 (workflow_id, workflow_id, task["id"]),
             )
         ]
+        runtime = attempt_runtime(attempts[-1]) if attempts else {}
         tasks.append(
             {
                 "id": task["id"],
+                "title": task["title"],
+                "prompt": task["prompt"],
+                "cwd": task["cwd"],
+                "access": task["access"],
+                "agent": runtime.get("agent", task["access"]),
+                "currentTool": runtime.get("currentTool"),
+                "tokens": runtime.get("tokens"),
+                "cost": runtime.get("cost"),
                 "state": task["state"],
                 "phase": task["phase"],
                 "resources": parse_resources(task["resources"]),
@@ -2779,69 +2865,199 @@ def command_workflow_cancel(args: argparse.Namespace) -> None:
             )
 
 
+WATCH_COLUMNS = (
+    ("queued", "Queued"),
+    ("ready", "Ready"),
+    ("in_progress", "In progress"),
+    ("terminated", "Terminated"),
+)
+WATCH_TERMINAL = {"done", "failed", "cancelled", "blocked", "orphaned", "lost"}
+
+
+def watch_bucket(state: str) -> str:
+    return state if state in {"queued", "ready", "in_progress"} else "terminated"
+
+
+def watch_elapsed(started: str | None, finished: str | None) -> str:
+    if not started:
+        return "-"
+    try:
+        end = datetime.fromisoformat(finished) if finished else datetime.now(UTC)
+        seconds = max(0, int((end - datetime.fromisoformat(started)).total_seconds()))
+    except ValueError:
+        return "-"
+    return f"{seconds // 60}m{seconds % 60:02d}s"
+
+
+def watch_card_lines(
+    task: dict[str, Any], width: int, selected: bool = False
+) -> list[str]:
+    """Pure, deterministic card layout used by curses and unit tests."""
+    tag = task["state"].upper() if watch_bucket(task["state"]) == "terminated" else ""
+    flags = " ".join(
+        filter(
+            None,
+            (
+                "CRITICAL" if task.get("criticalPath") else "",
+                "BLOCKED" if task.get("blocker") else "",
+                "DEFERRED" if task.get("deferral") == "ready" else "",
+            ),
+        )
+    )
+    attempt = task.get("attempts", [])[-1] if task.get("attempts") else {}
+    facts = [
+        f"phase: {task.get('phase') or '-'}",
+        f"elapsed: {watch_elapsed(attempt.get('started_at'), attempt.get('finished_at'))}",
+        f"retries: {task.get('retries', 0)}",
+        f"resources: {','.join(task.get('leasedResources') or task.get('resources') or []) or '-'}",
+    ]
+    if task.get("currentTool"):
+        facts.append(f"tool: {task['currentTool']}")
+    if task.get("tokens") is not None or task.get("cost") is not None:
+        facts.append(
+            f"tokens/cost: {task.get('tokens', '-')} / {task.get('cost', '-')}"
+        )
+    if task.get("deferral") and task.get("state") == "ready":
+        facts.append(f"deferral: {task['deferral']}")
+    lines = [f"{'>' if selected else ' '} {task['id']} {tag}".rstrip()]
+    if flags:
+        lines.append(f"! {flags}")
+    for fact in facts:
+        lines.extend(
+            textwrap.wrap(fact, width=max(1, width - 2), break_long_words=True)
+            or [fact]
+        )
+    return lines
+
+
+def watch_board_lines(
+    projection: dict[str, Any],
+    width: int,
+    selected_id: str | None,
+    filters: dict[str, str],
+    hidden_terminal: set[str],
+) -> tuple[list[str], list[str]]:
+    """Return equal-width bordered board lines plus visible task ids; no curses/DB."""
+    column_width = max(12, width // 4)
+    columns: dict[str, list[list[str]]] = {key: [] for key, _ in WATCH_COLUMNS}
+    visible: list[str] = []
+    for task in projection["tasks"]:
+        if task["id"] in hidden_terminal or (
+            filters["state"] != "all"
+            and watch_bucket(task["state"]) != filters["state"]
+        ):
+            continue
+        if filters["resource"] != "all" and filters["resource"] not in task.get(
+            "resources", []
+        ):
+            continue
+        if filters["agent"] != "all" and filters["agent"] != task.get("agent"):
+            continue
+        columns[watch_bucket(task["state"])].append(
+            watch_card_lines(task, column_width - 2, task["id"] == selected_id)
+        )
+        visible.append(task["id"])
+    height = max(
+        [1] + [sum(len(card) + 1 for card in cards) for cards in columns.values()]
+    )
+    lines = ["+" + "+".join("-" * (column_width - 1) for _ in WATCH_COLUMNS) + "+"]
+    lines.append(
+        "|"
+        + "|".join(f" {title}".ljust(column_width - 1) for _, title in WATCH_COLUMNS)
+        + "|"
+    )
+    lines.append("+" + "+".join("-" * (column_width - 1) for _ in WATCH_COLUMNS) + "+")
+    cursors = {
+        key: [line for card in cards for line in card + [""]]
+        for key, cards in columns.items()
+    }
+    for row in range(height):
+        lines.append(
+            "|"
+            + "|".join(
+                (cursors[key][row] if row < len(cursors[key]) else "").ljust(
+                    column_width - 1
+                )[: column_width - 1]
+                for key, _ in WATCH_COLUMNS
+            )
+            + "|"
+        )
+    lines.append("+" + "+".join("-" * (column_width - 1) for _ in WATCH_COLUMNS) + "+")
+    return lines, visible
+
+
+def watch_details(task: dict[str, Any] | None) -> list[str]:
+    """Bounded selected-card detail view; reading does not alter durable history."""
+    if not task:
+        return ["Details: select a card with j/k or arrows."]
+    attempt = task.get("attempts", [])[-1] if task.get("attempts") else {}
+    run_dir = Path(attempt["run_dir"]) if attempt.get("run_dir") else None
+    report_tail = rpc_tail = "-"
+    if run_dir:
+        with suppress(OSError):
+            report_tail = (run_dir / "report.md").read_text(
+                encoding="utf-8", errors="replace"
+            )[-240:].replace("\n", " ") or "-"
+        with suppress(OSError):
+            rpc_tail = (run_dir / "events.jsonl").read_text(
+                encoding="utf-8", errors="replace"
+            )[-240:].replace("\n", " ") or "-"
+    return [
+        f"Details {task['id']} prompt: {task.get('prompt', '')[:150]}",
+        f"dependencies: {','.join(task.get('dependsOn', [])) or '-'}  artifacts: {attempt.get('run_dir', '-')}",
+        f"tmux target: {attempt.get('tmux_pane', '-')}  report tail: {report_tail}",
+        f"RPC tail: {rpc_tail}",
+    ]
+
+
 def draw_watch(
-    screen: Any,
-    db: sqlite3.Connection,
-    workflow_id: str,
-    root: Path,
-    drive: bool,
+    screen: Any, db: sqlite3.Connection, workflow_id: str, root: Path, drive: bool
 ) -> None:
     screen.nodelay(True)
     screen.timeout(500)
     last_tick = 0.0
-    columns = [
-        ("queued", "Queued"),
-        ("ready", "Ready"),
-        ("in_progress", "In progress"),
-        ("done", "Done"),
-        ("failed", "Failed"),
-        ("blocked", "Blocked"),
-        ("cancelled", "Cancelled"),
-    ]
+    selected_id: str | None = None
+    details = False
+    gantt = False
+    hidden_terminal: set[str] = set()
+    filters = {"state": "all", "resource": "all", "agent": "all"}
     while True:
         if drive and time.monotonic() - last_tick >= 1:
             with db:
                 tick(db, workflow_id, root)
             last_tick = time.monotonic()
-        screen.erase()
+        projection = workflow_projection(db, workflow_id)
+        resources = sorted(
+            {r for task in projection["tasks"] for r in task["resources"]}
+        )
+        agents = sorted({task["agent"] for task in projection["tasks"]})
         height, width = screen.getmaxyx()
-        workflow = workflow_row(db, workflow_id)
-        screen.addnstr(
-            0,
-            0,
-            f"{workflow['id']} [{workflow['state']}]  q: quit  r: refresh/tick",
-            width - 1,
+        screen.erase()
+        header = f"{workflow_id} [{projection['workflow']['state']}] q quit r tick g gantt d details j/k select x hide terminal 0 reset s state f resource a agent"
+        screen.addnstr(0, 0, header, width - 1)
+        screen.hline(1, 0, ord("-"), max(0, width - 1))
+        board, visible = watch_board_lines(
+            projection, width, selected_id, filters, hidden_terminal
         )
-        tasks = db.execute(
-            "SELECT * FROM tasks WHERE workflow_id=? ORDER BY priority DESC,id",
-            (workflow_id,),
-        ).fetchall()
-        col_width = max(16, width // len(columns))
-        for i, (_, title) in enumerate(columns):
-            screen.addnstr(2, i * col_width, title, col_width - 1)
-        positions = {state: 3 for state, _ in columns}
-        for task in tasks:
-            state = task["state"]
-            x = [s for s, _ in columns].index(state) * col_width
-            y = positions[state]
-            if y < height - 1:
-                screen.addnstr(
-                    y, x, f"{task['id']} ({task['phase'] or '-'})", col_width - 1
-                )
-            positions[state] += 1
-        screen.addnstr(
-            height - 2,
-            0,
-            "Gantt (attempt timing): "
-            + " | ".join(
-                f"{a['task_id']}:{a['started_at'][11:19]}-{(a['finished_at'] or 'now')[11:19]}"
-                for a in db.execute(
-                    "SELECT * FROM attempts WHERE workflow_id=? ORDER BY started_at DESC LIMIT 5",
-                    (workflow_id,),
-                )
-            ),
-            width - 1,
+        if selected_id not in visible:
+            selected_id = visible[0] if visible else None
+        detail_lines = (
+            watch_details(
+                next((t for t in projection["tasks"] if t["id"] == selected_id), None)
+            )
+            if details
+            else []
         )
+        content = watch_timeline_lines(projection, width) if gantt else board
+        content_limit = height - len(detail_lines) - 2
+        for y, line in enumerate(content, 2):
+            if y >= content_limit:
+                break
+            screen.addnstr(y, 0, line, width - 1)
+        status = f"filters state={filters['state']} resource={filters['resource']} agent={filters['agent']}  history preserved; export is non-destructive"
+        screen.addnstr(content_limit, 0, status, width - 1)
+        for offset, line in enumerate(detail_lines):
+            screen.addnstr(content_limit + 1 + offset, 0, line, width - 1)
         screen.refresh()
         key = screen.getch()
         if key in (ord("q"), 27):
@@ -2850,6 +3066,88 @@ def draw_watch(
             with db:
                 tick(db, workflow_id, root)
             last_tick = time.monotonic()
+        elif key == ord("g"):
+            gantt = not gantt
+        elif key == ord("d"):
+            details = not details
+        elif key in (ord("j"), curses.KEY_DOWN) and visible:
+            selected_id = (
+                visible[(visible.index(selected_id) + 1) % len(visible)]
+                if selected_id in visible
+                else visible[0]
+            )
+        elif key in (ord("k"), curses.KEY_UP) and visible:
+            selected_id = (
+                visible[(visible.index(selected_id) - 1) % len(visible)]
+                if selected_id in visible
+                else visible[0]
+            )
+        elif key == ord("x"):
+            hidden_terminal.update(
+                t["id"] for t in projection["tasks"] if t["state"] in WATCH_TERMINAL
+            )
+        elif key == ord("0"):
+            hidden_terminal.clear()
+        elif key == ord("s"):
+            filters["state"] = ("all", "queued", "ready", "in_progress", "terminated")[
+                ("all", "queued", "ready", "in_progress", "terminated").index(
+                    filters["state"]
+                )
+                + 1
+                if filters["state"] != "terminated"
+                else 0
+            ]
+        elif key == ord("f"):
+            filters["resource"] = (resources + ["all"])[
+                (resources + ["all"]).index(filters["resource"]) + 1
+                if filters["resource"] in resources
+                else 0
+            ]
+        elif key == ord("a"):
+            filters["agent"] = (agents + ["all"])[
+                (agents + ["all"]).index(filters["agent"]) + 1
+                if filters["agent"] in agents
+                else 0
+            ]
+
+
+def watch_timeline_lines(projection: dict[str, Any], width: int) -> list[str]:
+    """Pure proportional Gantt layout; retained as an opt-in watch view."""
+    attempts = [
+        a
+        for task in projection["tasks"]
+        for a in task.get("attempts", [])
+        if a.get("started_at")
+    ]
+    if not attempts:
+        return ["Gantt: no attempt timing yet."]
+    starts = [datetime.fromisoformat(a["started_at"]) for a in attempts]
+    ends = [
+        datetime.fromisoformat(a["finished_at"])
+        if a.get("finished_at")
+        else datetime.now(UTC)
+        for a in attempts
+    ]
+    first, last = min(starts), max(ends)
+    span = max(1, (last - first).total_seconds())
+    bar = max(8, width - 24)
+    lines = ["Gantt (proportional attempt history; durable data is unchanged)"]
+    for task in projection["tasks"]:
+        for attempt in task.get("attempts", []):
+            if not attempt.get("started_at"):
+                continue
+            start = datetime.fromisoformat(attempt["started_at"])
+            end = (
+                datetime.fromisoformat(attempt["finished_at"])
+                if attempt.get("finished_at")
+                else datetime.now(UTC)
+            )
+            left = round((start - first).total_seconds() / span * (bar - 1))
+            length = max(1, round((end - start).total_seconds() / span * bar))
+            lines.append(
+                f"{task['id'][:20]:20} " + " " * left + "#" * min(length, bar - left)
+            )
+    return lines
 
 
 def command_workflow_watch(args: argparse.Namespace) -> None:
