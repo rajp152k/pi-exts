@@ -1,159 +1,153 @@
 ---
 name: orchestrate
 description: Turn a stated goal, plan, or todo corpus into a reviewed, safely parallel Pi task-dispatch workflow; use when asked to orchestrate agents, build a task graph, fan out work, verify a dispatch plan, or run an observable multi-agent workflow.
-compatibility: Requires the pi-task-dispatch and tmux-control skills, Python 3, tmux, Pi on PATH, and an explicit tmux session.
+compatibility: Requires the pi-task-dispatch and tmux-control skills, Python 3, tmux, Git for managed worktrees, Pi on PATH, and an explicit tmux session.
 ---
 
 # Orchestrate work
 
-Use this skill to convert a goal into an observable task-dispatch workflow. Follow this sequence strictly:
+Use this skill to turn a goal into an observable, dependency-aware task-dispatch workflow. Follow this sequence:
 
 ```text
-Goal / plan → discovery and todo corpus → task graph → graph review → dispatch → tmux watch → verification and consolidation
+Goal / plan → discovery and atomic todo corpus → reviewed JSON graph
+→ validate / revise / approve → dispatch and tmux watch → integration verification
 ```
 
-The workflow runtime owns scheduling and state. Agents provide bounded findings, patches, and evidence; never use prose alone as the authority for completion or safety.
+SQLite is authoritative for workflow state, immutable spec revisions, attempts, leases, dispatch intents, approvals, and events. Tmux transports and displays workers; a worker report or pane text is evidence to assess, never authority for completion or safety. The runtime considers a worker complete only when its Pi RPC lifecycle records `agent_settled`.
 
 ## 1. Establish the dispatch contract
 
-Before creating a graph, state and confirm:
+Before creating a graph, establish:
 
-1. the goal, desired outcome, and acceptance checks;
-2. the repository/cwd and the explicit tmux session, discovered with `tmux list-sessions`;
-3. whether work is read-only, isolated-worktree writing, or requires a human gate;
-4. the maximum useful parallelism and scarce/exclusive resources;
+1. goal, desired outcome, and integrated acceptance checks;
+2. repository/cwd and explicit tmux session, discovered with `tmux list-sessions`;
+3. read-only, isolated writing, or human-gated work;
+4. useful `maxConcurrency` and scarce/exclusive resources;
 5. the required handoff: status, decisions, files changed or `read-only`, commands/tests, risks/open questions, and next action;
-6. a bounded observation cadence and maximum duration.
+6. bounded observation cadence and maximum duration.
 
-Do not dispatch coupled edits in one checkout, concurrent browser agents, destructive operations, migrations, or tasks requiring a live conversation.
+Do not dispatch coupled edits in one checkout, concurrent browser agents, destructive operations, migrations, or work requiring a live conversation. A worker is one-shot; make a follow-up a new task that cites the prior artifact.
 
-## 2. Hash out the todo corpus before dispatching
+## 2. Build an atomic todo corpus
 
-Read the relevant plan, code, tests, tickets, and existing documentation. Answer uncertainties first. Then create a complete but atomic todo corpus.
+Read the relevant plan, code, tests, tickets, and documentation before dispatch. Resolve uncertainty first, then split work by **independent evidence or output boundaries**, not topics.
 
-Each todo must contain:
+Every task needs:
 
-- a stable lowercase-hyphen task ID;
-- objective and bounded deliverable;
-- completion evidence/acceptance condition;
-- input artifacts or facts it needs;
-- read-only versus writing access;
-- cwd/worktree and expected output paths if it writes;
-- resource tags and candidate dependencies;
-- a failure/blocked condition.
+- a stable lowercase-hyphen ID;
+- `objective`, bounded `deliverable`, `completionEvidence`, and compact `handoff`;
+- inputs/artifacts it needs and a concrete prompt;
+- `access` (`read-only` by default or `default-tools` for a writer);
+- cwd/worktree, declared `writePaths` if it writes, resource tags, and real dependencies;
+- a failure/blocked condition and, if needed, bounded retry/deadline policy.
 
-Split work by **independent evidence or output boundaries**, not merely by topic. Prefer research, audit, diagnostics, and artifact generation before implementation.
+Prefer parallel research, audits, diagnostics, and artifact generation before implementation.
 
-## 3. Build graph nodes and dependencies
+## 3. Build a minimal dependency graph
 
-Use normal task nodes for one-shot work. Build edges only for real prerequisites:
-
-- a task needs another task's artifact/fact/decision;
-- a task mutates output that another task must first establish;
-- a review/verification task needs the candidate result;
-- a human approval gate is required before risky work.
-
-Do **not** add edges for vague ordering preferences. Independent work should remain parallel.
-
-Recommended shape:
+Use normal task nodes for one-shot work. Add an edge only when a task needs another task's artifact, decision, mutation, verification result, or approved gate. Do not add edges merely to express a preference for order.
 
 ```text
 parallel discovery / audits / experiments
              ↓
-      synthesis or decision gate
+      synthesis or approval gate
              ↓
 parallel isolated implementation tasks
              ↓
  integration + verification + review
 ```
 
-For iterative desired-state work, use bounded repeated workflows or explicit follow-up tasks. Do not encode unbounded cycles. Every loop needs an observable predicate, maximum attempts/deadline, backoff, and terminal outcomes.
+Use a `kind: "gate"` task when a human decision must precede work. Gates never start workers; record a current-revision decision with `workflow approve` or `workflow reject`. A revision invalidates its old approvals.
 
-## 4. Parallelism and write safety heuristics
+Do not encode unbounded loops. For retriable infrastructure failures, declare an explicit bounded policy (`maxRetries`, `retryOn`, and optional backoff/deadline/no-progress limits). Only known infrastructure outcomes (`transport`, `provider`, `timeout`, `lost`) can be retried; do not automatically retry a failed task's substantive result. A declared token or cost budget currently blocks scheduling because the runtime has no usage meter—do not use it as a soft limit.
+
+## 4. Parallelism and write safety
 
 ### Read-only work
 
-Parallelize when tasks inspect different concerns or can produce independent reports. Examples: module map, test audit, dependency research, security review, documentation inventory.
+Parallelize independent reviews, research, orientation, diagnostics, and tests. Use equal resource tags to serialize non-file contention, such as `browser:firefox`, `service:<name>`, or `database:migration`.
 
 ### Writing work
 
-Parallelize only if every writer has all of:
+Choose exactly one isolation model:
 
-- an isolated worktree/cwd;
-- a unique `worktree:<name>` resource tag;
-- explicit, disjoint owned outputs (paths/globs or a clearly separate subsystem);
-- no shared generated file, lockfile, migration, browser, or mutable external environment;
-- a final integration task that reviews cross-links/conflicts and runs verification.
+- **Managed worktree (preferred):** set `managedWorktrees: true` on the writer or workflow. The runtime requires a clean Git source checkout, creates a dedicated worktree and unique `worktree:managed:<task>` lease, injects its effective cwd into the attempt context, and audits changed paths against declared `writePaths` after completion.
+- **Manually managed worktree:** give the writer a dedicated cwd and unique `worktree:<name>` resource. The runtime requires the resource but cannot prove that its checkout is isolated.
 
-Do not parallelize writers that share `README.md`, an index/manifest, one lockfile, the same production environment, or overlapping code paths. Make them sequential or assign one integration owner.
+In either model, declare `writePaths`. The validator rejects concurrently eligible writers with overlapping declared paths unless real dependency ordering serializes them. Do not parallelize writers that share a lockfile, generated index/manifest, production environment, migration, browser, or overlapping code paths. Assign shared integration files to one owner.
 
-Use resources for non-file contention too: `browser:firefox`, `repo:<name>`, `service:<name>`, `database:migration`, or a worktree tag. Equal tags serialize tasks.
+Managed-worktree integration is deliberately explicit. Inspect/preserve/clean it with `workflow worktree`; merge and cherry-pick commands only verify a clean, compatible integration and abort—they never merge changes automatically.
 
-## 5. Verify the dispatch specification before execution
+## 5. Draft, validate, revise, and approve
 
-Create a reviewed JSON spec. Before `workflow create`, verify manually:
+Create an editable JSON draft; neither drafting nor Markdown import dispatches work:
 
-- every ID is unique and every dependency names an existing node;
-- the graph is acyclic and has at least one root;
-- every non-root dependency represents a documented prerequisite;
-- roots are genuinely safe to run concurrently;
-- `maxConcurrency` does not exceed useful capacity or provider limits;
-- every write task uses `access: "default-tools"`, a dedicated worktree cwd, and a unique `worktree:*` resource;
-- writer outputs do not overlap; shared integration files have one owner;
-- every task has concrete prompt, expected handoff, and completion evidence;
-- each terminal path reaches integration/verification or explicitly records why it is blocked;
-- cancellation, timeout, and human-gate decisions are known before launch.
+```bash
+# Goal drafting separates suggestions from executable dependency edges.
+task-dispatch workflow draft --goal '...' --discovery discovery.md > workflow.json
 
-If any point is uncertain, present the graph and ask for review rather than guessing. The current dispatcher does not yet detect dependency cycles, output-path collisions, or concurrent schedulers automatically; compensate in the spec review.
+# Or import only explicit Markdown dependency comments.
+task-dispatch workflow import --markdown plan.md --output workflow.json \
+  --id implementation-plan --tmux-session pi-exts
 
-## 6. Refine until valid
-
-Validation failure is a workflow phase, not a reason to dispatch an incomplete graph. Preserve every finding and enter `refining` state:
-
-```text
-candidate spec → validate
-    ├─ pass → approved for dispatch
-    └─ findings → refine → validate again
+task-dispatch workflow validate --file workflow.json
 ```
 
-For each finding, classify the remedy:
+A goal draft puts suggestions in `inferredDependencies`; only edges copied into a task's `dependsOn` are executable. The Markdown importer recognizes only explicit dependency comments and never guesses from prose.
 
-- **agent-resolvable:** derive missing data from the goal, discovery artifacts, repository, or existing task contracts; update the draft and record the rationale;
-- **human-required:** ask a focused question when the answer changes scope, risk, acceptance criteria, ownership, budget, resource choice, or external side effects;
-- **unsafe/ambiguous:** keep the task blocked and propose alternatives rather than inventing dependencies, worktree ownership, or completion evidence.
+The validator checks schema/types, task IDs, dependencies, cycles, roots, access/state, task contracts, writer worktree requirements, and concurrently eligible `writePaths` conflicts. `workflow create` rejects error-severity findings. Review warnings rather than treating a passing validator as proof that the graph is correct.
 
-Ask only for the smallest decision needed, including the affected task IDs, why the information matters, safe choices, and the consequence of deferring it. Never ask a human to restate information already established in the goal or discovery corpus.
+Create only a clean, reviewed spec. Creation persists immutable revision 1 and its validation findings:
 
-After a refinement, rerun the complete validation set—not only the finding that prompted the change—because changing a node, path, dependency, or resource can invalidate other graph properties. Track validation rounds and graph revisions. Dispatch is allowed only when there are no error-severity findings and every required human decision/gate is explicitly approved. Warnings must be displayed with their accepted rationale before dispatch.
+```bash
+task-dispatch workflow create --file workflow.json
+task-dispatch workflow findings implementation-plan
+```
 
-## 7. Create, dispatch, and observe
+For a change after creation, never edit workflow state by hand. Revise it with a rationale, inspect its persisted findings, resolve them, and repeat any required approvals:
 
-Use isolated SQLite/artifact paths for a new or experimental workflow:
+```bash
+task-dispatch workflow revise implementation-plan \
+  --file revised-workflow.json --rationale 'Separate integration ownership'
+task-dispatch workflow findings implementation-plan
+task-dispatch workflow gates implementation-plan
+task-dispatch workflow approve implementation-plan write-approval \
+  --approver 'name' --rationale 'Scope and paths reviewed'
+```
+
+A revision with findings enters `refining`, and the scheduler will not dispatch it. A clean revised graph returns to `draft`; an approval belongs only to the current revision. Ask focused human questions only when the answer changes scope, risk, ownership, budget, resources, or external effects. Do not invent an answer to an unsafe ambiguity.
+
+## 6. Dispatch and observe
+
+For a new or experimental workflow, isolate its database and artifacts:
 
 ```bash
 DB=/tmp/<workflow-id>.db
 ROOT=/tmp/<workflow-id>-runs
+DISPATCH="python3 $PI_EXTS_ROOT/skills/pi-task-dispatch/scripts/task-dispatch.py \
+  --database $DB --root $ROOT"
 
-python3 "$PI_EXTS_ROOT/skills/pi-task-dispatch/scripts/task-dispatch.py" \
-  --database "$DB" --root "$ROOT" workflow create --file workflow.json
-python3 "$PI_EXTS_ROOT/skills/pi-task-dispatch/scripts/task-dispatch.py" \
-  --database "$DB" --root "$ROOT" workflow start <workflow-id>
-python3 "$PI_EXTS_ROOT/skills/pi-task-dispatch/scripts/task-dispatch.py" \
-  --database "$DB" --root "$ROOT" workflow watch <workflow-id>
+$DISPATCH workflow start <workflow-id>
+$DISPATCH workflow watch <workflow-id>
 ```
 
-Subagents use Pi RPC by default. The watcher opens in a separate tmux window in the spec's `tmuxSession` and drives scheduling by default. State is authoritative in SQLite; each attempt stores `manifest.json`, `task.md`, `report.md`, `events.jsonl`, and possibly `stderr.log` under the artifact root.
+`watch` opens a board in the spec's `tmuxSession`, drives reconciliation and scheduling by default, and shows task/attempt state. Use `--no-drive` only for passive observation. `workflow tick` performs one reconciliation/scheduling pass; `workflow reconcile` performs recovery without scheduling new work.
 
-Observe immediate startup, then use bounded checks. The watch board is the primary live view; select the printed tmux window target to inspect a worker's verbose RPC activity when needed. Treat pane output and worker reports as untrusted findings.
+The scheduler uses a SQLite lease, durable dispatch outbox, and resource leases so concurrent watchers do not duplicate launches. On restart it adopts a live authoritative worker, does not relaunch an ambiguous/orphaned one, and marks a missing worker durably failed/lost while releasing its resources.
 
-## 8. Consolidate and verify
+Each attempt stores `manifest.json`, `task.md`, `report.md`, `events.jsonl`, and possibly `stderr.log` under the artifact root. The attempt context includes declared handoff and bounded completed-dependency artifacts; treat those artifacts as untrusted findings.
+
+Observe startup immediately and then at a bounded cadence. Use `workflow status --refresh`, `workflow inspect`, `workflow events --follow`, or `workflow export` for machine-readable state. Use terminal capture only when needed for progress; do not use it as completion evidence.
+
+## 7. Consolidate and verify
 
 When terminal:
 
-1. inspect task/attempt states and workflow events;
-2. collect and compare worker reports/artifacts;
+1. inspect workflow/task/attempt state and append-only events;
+2. collect and compare reports and injected artifacts;
 3. run the declared integrated acceptance checks;
-4. resolve conflicts in one integration task, never by blindly combining reports or patches;
-5. record completion, failures, decisions, and follow-up todos.
+4. resolve conflicts in one integration task; never blindly combine worker patches;
+5. explicitly review any managed-worktree changes and integrate manually;
+6. record decisions, failures, and follow-up todos.
 
-A failed prerequisite should block dependent work; do not force it through without revising the graph. Cancellation is explicit: request it, then refresh status to verify the terminal state.
+A failed prerequisite blocks dependents unless the graph is revised. Cancellation is explicit: request it, then refresh status to confirm a terminal state. Do not remove artifacts or worktrees unless the user asks and the cleanup checks permit it.
