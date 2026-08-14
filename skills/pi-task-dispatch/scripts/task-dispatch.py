@@ -11,6 +11,7 @@ import json
 import os
 import re
 import select
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -279,8 +280,15 @@ def command_worker(args: argparse.Namespace) -> None:
     manifest = load_manifest(run_dir)
     report = Path(manifest["reportPath"])
     event_log = run_dir / "events.jsonl"
-    command = ["pi", "--mode", "rpc", "--no-session", "--name", manifest["id"]]
-    if manifest["access"] == "read-only":
+    # Test seam: an explicit command can emulate Pi's JSONL RPC protocol. It is
+    # intentionally opt-in so production invocation remains exactly unchanged.
+    override = os.environ.get("TASK_DISPATCH_RPC_COMMAND")
+    command = (
+        shlex.split(override)
+        if override
+        else ["pi", "--mode", "rpc", "--no-session", "--name", manifest["id"]]
+    )
+    if not override and manifest["access"] == "read-only":
         command.extend(["--tools", READ_ONLY_TOOLS])
     try:
         process = subprocess.Popen(
@@ -327,9 +335,16 @@ def command_worker(args: argparse.Namespace) -> None:
                         break
                     continue
                 events.write(line)
-                event = json.loads(line)
+                events.flush()
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError as error:
+                    raise RuntimeError(f"malformed RPC JSONL: {error}") from error
+                if not isinstance(event, dict):
+                    raise RuntimeError("malformed RPC JSONL: event must be an object")
                 render_rpc_event(event)
-                event_type = event.get("type")
+                raw_event_type = event.get("type")
+                event_type = raw_event_type if isinstance(raw_event_type, str) else ""
                 phase = {
                     "agent_start": "discovering",
                     "tool_execution_start": "working",
@@ -359,6 +374,9 @@ def command_worker(args: argparse.Namespace) -> None:
         stderr = process.stderr.read().decode("utf-8", errors="replace")
         if stderr:
             (run_dir / "stderr.log").write_text(stderr, encoding="utf-8")
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None and not stream.closed:
+                stream.close()
         cancelled = (run_dir / "cancel-requested").exists()
         update_manifest(
             run_dir,
@@ -1374,7 +1392,7 @@ def queue_retry_if_allowed(
     db.execute(
         "UPDATE attempt_policies SET retry_eligible=?,not_before=?,decision=? WHERE attempt_id=?",
         (
-            int(eligible),
+            1 if eligible else 0,
             not_before,
             "retry-scheduled" if eligible else "terminal-no-retry",
             attempt["id"],
@@ -2417,6 +2435,60 @@ def command_workflow_import(args: argparse.Namespace) -> None:
     print(output)
 
 
+def workflow_draft(goal: str, discovery: list[str]) -> dict[str, Any]:
+    """Produce a review-only starter graph; inferred edges never schedule work."""
+    key = re.sub(r"[^a-z0-9]+", "-", goal.lower()).strip("-")[:28] or "workflow"
+    tasks: list[dict[str, Any]] = []
+    inferred: list[dict[str, str]] = []
+    for index, source in enumerate(discovery, 1):
+        task_id = f"discover-{index}"
+        tasks.append(
+            {
+                "id": task_id,
+                "title": f"Inspect {source}",
+                "prompt": f"Inspect {source} for: {goal}. Do not modify files. Return evidence and a compact handoff.",
+                "access": "read-only",
+                "dependsOn": [],
+            }
+        )
+        inferred.append(
+            {
+                "from": task_id,
+                "to": "synthesize",
+                "rationale": "The synthesis should consider this requested discovery input.",
+            }
+        )
+    tasks.append(
+        {
+            "id": "synthesize",
+            "title": "Synthesize discovery",
+            "prompt": f"Synthesize the discovery findings for: {goal}. Do not modify files. Return a compact handoff.",
+            "access": "read-only",
+            "dependsOn": [],
+        }
+    )
+    return {
+        "id": f"{key}-draft",
+        "name": f"Draft: {goal}",
+        "cwd": str(Path.cwd()),
+        "tmuxSession": "REPLACE_ME",
+        "maxConcurrency": max(1, min(4, len(discovery) or 1)),
+        "goal": goal,
+        "state": "draft",
+        "tasks": tasks,
+        "inferredDependencies": inferred,
+        "approvedDependencies": [],
+        "draftRationale": "Inferred dependencies are suggestions only. Review and copy approved edges into task dependsOn before create; this command never writes the database or dispatches.",
+    }
+
+
+def command_workflow_draft(args: argparse.Namespace) -> None:
+    # stdout is deliberately JSON only, so it is safe to redirect to an editable spec.
+    print(
+        json.dumps(workflow_draft(args.goal, args.discovery), indent=2, sort_keys=True)
+    )
+
+
 def command_workflow_tick(args: argparse.Namespace) -> None:
     db = db_connect(args.database)
     tick(db, args.id, Path(args.root).expanduser())
@@ -2437,6 +2509,23 @@ def command_workflow_status(args: argparse.Namespace) -> None:
     print_workflow(db, args.id)
 
 
+def event_record(row: sqlite3.Row) -> dict[str, Any]:
+    """Stable event schema shared by JSONL export and following streams."""
+    try:
+        detail = json.loads(row["detail"])
+    except (TypeError, json.JSONDecodeError):
+        detail = {"raw": row["detail"]}
+    return {
+        "id": row["id"],
+        "workflowId": row["workflow_id"],
+        "taskId": row["task_id"],
+        "attemptId": row["attempt_id"],
+        "type": row["type"],
+        "detail": detail,
+        "createdAt": row["created_at"],
+    }
+
+
 def command_workflow_events(args: argparse.Namespace) -> None:
     db = db_connect(args.database)
     last = 0
@@ -2446,13 +2535,103 @@ def command_workflow_events(args: argparse.Namespace) -> None:
             (args.id, last),
         ).fetchall()
         for row in rows:
-            print(
-                f"{row['created_at']} {row['type']:24} {row['task_id'] or '-':24} {row['detail']}"
-            )
+            record = event_record(row)
+            if args.jsonl:
+                print(json.dumps(record, sort_keys=True))
+            else:
+                print(
+                    f"{record['createdAt']} {record['type']:24} {record['taskId'] or '-':24} {json.dumps(record['detail'], sort_keys=True)}"
+                )
             last = row["id"]
         if not args.follow:
             return
         time.sleep(args.interval)
+
+
+def workflow_projection(db: sqlite3.Connection, workflow_id: str) -> dict[str, Any]:
+    """Read model for scripts/UIs; does not mutate or dispatch."""
+    workflow = workflow_row(db, workflow_id)
+    rows = list(
+        db.execute(
+            "SELECT * FROM tasks WHERE workflow_id=? ORDER BY id", (workflow_id,)
+        )
+    )
+    parent_map = {
+        task["id"]: [
+            row[0]
+            for row in db.execute(
+                "SELECT depends_on FROM dependencies WHERE workflow_id=? AND task_id=? ORDER BY depends_on",
+                (workflow_id, task["id"]),
+            )
+        ]
+        for task in rows
+    }
+    children: dict[str, list[str]] = {task["id"]: [] for task in rows}
+    for child, parents in parent_map.items():
+        for parent in parents:
+            children[parent].append(child)
+
+    # Validation rejects cycles; keep this defensive fallback for legacy DBs.
+    def longest(task_id: str, visiting: set[str] | None = None) -> int:
+        visiting = visiting or set()
+        if task_id in visiting:
+            return 0
+        return 1 + max(
+            (longest(child, visiting | {task_id}) for child in children[task_id]),
+            default=0,
+        )
+
+    depth = {task["id"]: longest(task["id"]) for task in rows}
+    critical = {
+        task_id
+        for task_id, value in depth.items()
+        if value == max(depth.values(), default=0)
+    }
+    tasks = []
+    for task in rows:
+        attempts = [
+            dict(row)
+            for row in db.execute(
+                "SELECT * FROM attempts WHERE workflow_id=? AND task_id=? ORDER BY started_at",
+                (workflow_id, task["id"]),
+            )
+        ]
+        leases = [
+            row[0]
+            for row in db.execute(
+                "SELECT resource FROM resource_leases WHERE workflow_id=? AND attempt_id IN (SELECT id FROM attempts WHERE workflow_id=? AND task_id=?)",
+                (workflow_id, workflow_id, task["id"]),
+            )
+        ]
+        tasks.append(
+            {
+                "id": task["id"],
+                "state": task["state"],
+                "phase": task["phase"],
+                "resources": parse_resources(task["resources"]),
+                "leasedResources": leases,
+                "dependsOn": parent_map[task["id"]],
+                "attempts": attempts,
+                "retries": max(0, len(attempts) - 1),
+                "blocker": "dependency" if task["state"] == "blocked" else None,
+                "deferral": task["state"]
+                if task["state"] in {"queued", "ready", "blocked"}
+                else None,
+                "criticalPath": task["id"] in critical,
+                "criticalDepth": depth[task["id"]],
+            }
+        )
+    return {"workflow": dict(workflow), "tasks": tasks}
+
+
+def command_workflow_export(args: argparse.Namespace) -> None:
+    print(
+        json.dumps(
+            workflow_projection(db_connect(args.database), args.id),
+            indent=2,
+            sort_keys=True,
+        )
+    )
 
 
 def command_workflow_inspect(args: argparse.Namespace) -> None:
@@ -2809,6 +2988,12 @@ def build_parser() -> argparse.ArgumentParser:
     imported.add_argument("--tmux-session")
     imported.add_argument("--cwd")
     imported.set_defaults(handler=command_workflow_import)
+    draft = wf.add_parser(
+        "draft", help="emit an editable, non-dispatching JSON workflow draft"
+    )
+    draft.add_argument("--goal", required=True)
+    draft.add_argument("--discovery", action="append", default=[], metavar="FILE")
+    draft.set_defaults(handler=command_workflow_draft)
     for name, handler, help_text in [
         ("start", command_workflow_tick, "start and schedule eligible work"),
         ("tick", command_workflow_tick, "reconcile and schedule once"),
@@ -2824,8 +3009,14 @@ def build_parser() -> argparse.ArgumentParser:
     events = wf.add_parser("events", help="print append-only event history")
     events.add_argument("id")
     events.add_argument("--follow", action="store_true")
+    events.add_argument(
+        "--jsonl", action="store_true", help="emit stable JSONL records"
+    )
     events.add_argument("--interval", type=float, default=1)
     events.set_defaults(handler=command_workflow_events)
+    exported = wf.add_parser("export", help="export stable workflow read-model JSON")
+    exported.add_argument("id")
+    exported.set_defaults(handler=command_workflow_export)
     inspect = wf.add_parser(
         "inspect", help="show task, dependencies, and latest attempt"
     )

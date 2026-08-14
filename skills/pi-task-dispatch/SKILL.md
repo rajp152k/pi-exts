@@ -45,7 +45,7 @@ Require a compact handoff with: status, summary/decisions, files changed or `rea
 
 ## Workflow orchestration
 
-Use a JSON specification for a reviewed work graph, or import unchecked Markdown todos into an editable JSON draft. The importer only recognizes explicit dependency comments and never guesses from prose:
+Use a JSON specification for a reviewed work graph, or import unchecked Markdown todos into an editable JSON draft. A goal draft is also review-only: `task-dispatch workflow draft --goal TEXT [--discovery FILE...]` writes JSON to stdout, records suggested `inferredDependencies` with rationale separately from empty `approvedDependencies`, and never dispatches. Copy reviewed edges into task `dependsOn` before creation. The Markdown importer only recognizes explicit dependency comments and never guesses from prose:
 
 ```markdown
 - [ ] Map relevant modules

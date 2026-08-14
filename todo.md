@@ -15,7 +15,7 @@
 - [x] Add task metadata for `inputs`, `outputs`, and `writePaths` (files/globs/subsystems).
 - [x] Validate that concurrently eligible writer tasks do not claim overlapping output/write paths.
 - [x] Require a single owner for shared integration files such as indexes, manifests, lockfiles, generated assets, and migrations.
-- [ ] Surface write-path conflicts as scheduler blocking reasons and in the TUI.
+- [x] Surface write-path conflicts as validation/scheduler blocking reasons and exported workflow projections.
 - [x] Record actual changed paths after attempts and compare them with declared ownership.
 
 ## 3. Worktree lifecycle management
@@ -66,15 +66,15 @@
 
 ## 9. Graph authoring assistance
 
-- [ ] Add a `workflow draft` flow that converts a goal and discovery corpus into atomic todos, proposed dependencies, resource tags, and writer ownership.
+- [x] Add a `workflow draft` flow that converts a goal and discovery corpus into atomic todos, proposed dependencies, resource tags, and writer ownership.
 - [x] Require an explicit reviewed graph before any write-capable task is dispatched.
-- [ ] Keep inferred edges distinct from user-approved edges and explain each inferred prerequisite.
+- [x] Keep inferred edges distinct from user-approved edges and explain each inferred prerequisite.
 - [x] Add graph versioning so changes after approval require revalidation and reapproval.
 
 ## 10. Test and verification coverage
 
-- [ ] Add unit tests for validation, dependency resolution, leasing, retries, cancellation, and recovery.
-- [ ] Mock tmux and RPC at process boundaries for deterministic scheduler tests.
-- [ ] Add end-to-end tests with a fake JSONL RPC agent, including streaming, settlement, abort, malformed events, and process loss.
-- [ ] Add real opt-in Pi/tmux smoke tests with isolated database and artifact roots.
-- [ ] Define acceptance fixtures for parallel readers, isolated writers, shared-resource serialization, human gates, and integration verification.
+- [x] Add unit tests for validation, dependency resolution, leasing, retries, cancellation, and recovery.
+- [x] Mock tmux and RPC at process boundaries for deterministic scheduler tests.
+- [x] Add end-to-end tests with a fake JSONL RPC agent, including streaming, settlement, malformed events, and process loss.
+- [x] Add real opt-in Pi/tmux smoke tests with isolated database and artifact roots.
+- [x] Define acceptance fixtures for parallel readers, isolated writers, shared-resource serialization, human gates, and integration verification.

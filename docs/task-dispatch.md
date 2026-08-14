@@ -67,6 +67,21 @@ task-dispatch --database "$DB" --root "$ROOT" workflow watch repo-scouts
 
 The watcher prints an exact `tmux select-window` command. Its board has Queued, Ready, In progress, Done, Failed, Blocked, and Cancelled columns. The bottom timing line is a compact recent-attempt summary, not a full graphical Gantt chart. Press `r` for an immediate tick and `q` to exit. Pass `--no-drive` to observe without scheduling.
 
+## Draft a workflow from a goal
+
+Generate a **JSON-only**, editable draft without creating a database record or launching a worker:
+
+```bash
+task-dispatch workflow draft --goal "Understand retry behavior" \
+  --discovery skills/pi-task-dispatch/scripts/task-dispatch.py \
+  --discovery skills/pi-task-dispatch/tests > workflow-draft.json
+```
+
+The draft keeps `inferredDependencies` (with rationale) separate from
+`approvedDependencies` and task `dependsOn`. Inferred edges are not scheduling
+edges: a reviewer must explicitly copy approved dependencies into `dependsOn`
+before `workflow create`.
+
 ## Validation and refinement
 
 Validate either a draft file or a stored workflow before dispatch:
@@ -97,7 +112,8 @@ Use the refinement loop: validate; resolve agent-safe findings in the spec; ask 
 ```bash
 task-dispatch --database "$DB" workflow status repo-scouts --refresh
 task-dispatch --database "$DB" workflow inspect repo-scouts map-source
-task-dispatch --database "$DB" workflow events repo-scouts
+task-dispatch --database "$DB" workflow events repo-scouts --jsonl
+task-dispatch --database "$DB" workflow export repo-scouts > read-model.json
 ```
 
 Use a bounded shell loop when CLI-only monitoring is needed; do not leave unbounded polling running:
@@ -128,6 +144,24 @@ task-dispatch --database "$DB" workflow status repo-scouts --refresh
 ```
 
 Omit the task ID to cancel the workflow. RPC workers observe the cancellation request, send Pi an RPC `abort`, then escalate after a short grace period. Always run a post-cancellation status refresh before drawing conclusions.
+
+`events --jsonl` emits stable one-record-per-line event objects, including IDs,
+timestamp, type, task/attempt IDs, and decoded detail. `workflow export` emits
+a stable read model with task state/phase, dependencies, attempts, resources,
+retries, blockers, and deferrals. Both are observation-only and never dispatch.
+
+## Opt-in real smoke test
+
+The default Python suite uses a fake JSONL RPC command and requires neither Pi
+nor tmux. To launch one isolated real worker, explicitly opt in:
+
+```bash
+TASK_DISPATCH_SMOKE=1 skills/pi-task-dispatch/tests/smoke_real.sh
+```
+
+It creates a temporary database/root and tmux session and cleans both up. It
+only verifies launch; inspect the printed run before treating any output as a
+result.
 
 ## Current limits
 
