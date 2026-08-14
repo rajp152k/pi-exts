@@ -106,7 +106,8 @@ Use the refinement loop: validate; resolve agent-safe findings in the spec; ask 
 - Dependencies have all-success semantics: a child becomes ready after every parent is done.
 - A failed, blocked, or cancelled parent blocks its child.
 - `maxConcurrency` caps simultaneous attempts.
-- Equal resource tags serialize work.
+- Resource leases support `read:<name>` (shared) and `write:<name>` (exclusive); a writer conflicts with every read/write lease of the same name. Untagged legacy resources, including `worktree:<name>`, remain exclusive.
+- A task cannot declare both `read:<name>` and `write:<name>` for the same name.
 - `read-only` is the default safe mode for discovery/review.
 - A `default-tools` task must use a dedicated worktree and declare a `worktree:<name>` resource. Do not dispatch coupled writers in one checkout.
 - The Markdown importer accepts `- [ ]` items and only recognizes dependencies written as `<!-- depends: task-id -->`; it does not infer graph edges from prose.

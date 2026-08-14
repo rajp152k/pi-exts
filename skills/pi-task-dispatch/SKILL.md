@@ -89,7 +89,7 @@ Use the refinement loop: resolve findings the agent can establish safely; ask a 
 
 > **Current limit:** recorded warning overrides, persisted refinement rounds/human answers, and a first-class `refining` state are still pending.
 
-The scheduler observes the configured `maxConcurrency`, serializes matching resource tags, and requires every default-tools (writing) task to declare a `worktree:<name>` resource. Read-only work can run in parallel. Cancellation is explicit:
+The scheduler observes `maxConcurrency` and resource leases. `read:<name>` leases are shared; `write:<name>` leases are exclusive against reads and writes. Untagged legacy resources (including `worktree:<name>`) remain exclusive. A task cannot declare both read and write for one name; every default-tools task needs a `worktree:<name>` resource. Cancellation is explicit:
 
 ```bash
 task-dispatch workflow cancel implementation-plan map-relevant-modules

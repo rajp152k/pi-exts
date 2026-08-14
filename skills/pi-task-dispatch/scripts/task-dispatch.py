@@ -532,7 +532,7 @@ def db_connect(value: str) -> sqlite3.Connection:
     CREATE TABLE IF NOT EXISTS dependencies (workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, depends_on TEXT NOT NULL, PRIMARY KEY(workflow_id,task_id,depends_on), FOREIGN KEY(workflow_id,task_id) REFERENCES tasks(workflow_id,id) ON DELETE CASCADE, FOREIGN KEY(workflow_id,depends_on) REFERENCES tasks(workflow_id,id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, run_dir TEXT NOT NULL, state TEXT NOT NULL, tmux_pane TEXT, started_at TEXT NOT NULL, finished_at TEXT, exit_code INTEGER, error TEXT);
     CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL, task_id TEXT, attempt_id TEXT, type TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS resource_leases (workflow_id TEXT NOT NULL, resource TEXT NOT NULL, attempt_id TEXT NOT NULL, acquired_at TEXT NOT NULL, PRIMARY KEY(workflow_id,resource));
+    CREATE TABLE IF NOT EXISTS resource_leases (workflow_id TEXT NOT NULL, resource TEXT NOT NULL, attempt_id TEXT NOT NULL, acquired_at TEXT NOT NULL, PRIMARY KEY(workflow_id,resource,attempt_id));
     CREATE TABLE IF NOT EXISTS scheduler_leases (workflow_id TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS dispatch_outbox (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id) ON DELETE CASCADE, workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, run_dir TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, error TEXT);
     CREATE TABLE IF NOT EXISTS workflow_specs (workflow_id TEXT PRIMARY KEY REFERENCES workflows(id) ON DELETE CASCADE, spec TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -559,6 +559,26 @@ def db_connect(value: str) -> sqlite3.Connection:
         db.execute(
             "ALTER TABLE tasks ADD COLUMN cleanup_policy TEXT NOT NULL DEFAULT 'clean'"
         )
+    # Older databases allowed only one holder per resource. Rebuild this small,
+    # standalone table so compatible read leases can coexist.
+    lease_pk = [
+        row["name"]
+        for row in sorted(
+            db.execute("PRAGMA table_info(resource_leases)").fetchall(),
+            key=lambda row: row["pk"],
+        )
+        if row["pk"]
+    ]
+    if lease_pk == ["workflow_id", "resource"]:
+        with db:
+            db.execute("ALTER TABLE resource_leases RENAME TO resource_leases_legacy")
+            db.execute(
+                "CREATE TABLE resource_leases (workflow_id TEXT NOT NULL, resource TEXT NOT NULL, attempt_id TEXT NOT NULL, acquired_at TEXT NOT NULL, PRIMARY KEY(workflow_id,resource,attempt_id))"
+            )
+            db.execute(
+                "INSERT INTO resource_leases SELECT * FROM resource_leases_legacy"
+            )
+            db.execute("DROP TABLE resource_leases_legacy")
     return db
 
 
@@ -759,6 +779,50 @@ def policy_errors(task_id: str, policy: dict[str, Any]) -> list[dict[str, Any]]:
     return findings
 
 
+def normalize_resource(resource: str) -> tuple[str, str]:
+    """Return (mode, normalized lease) while retaining legacy exclusivity."""
+    if resource.startswith(":"):
+        raise ValueError("resource mode is empty")
+    for mode in ("read", "write"):
+        prefix = f"{mode}:"
+        if resource.startswith(prefix):
+            name = resource[len(prefix) :].strip()
+            if not name:
+                raise ValueError(f"{mode} resource name is empty")
+            return mode, f"{mode}:{name}"
+    # Untagged resources are the legacy exclusive form. Do not reinterpret
+    # namespaces such as worktree:; their exact strings remain exclusive.
+    if not resource.strip():
+        raise ValueError("resource name is empty")
+    return "write", f"write:{resource}"
+
+
+def normalized_resources(resources: list[str]) -> list[str]:
+    """Normalize task resources and reject read/write declarations of one name."""
+    normalized: list[str] = []
+    modes_by_name: dict[str, set[str]] = {}
+    for resource in resources:
+        mode, lease = normalize_resource(resource)
+        name = lease.split(":", 1)[1]
+        modes_by_name.setdefault(name, set()).add(mode)
+        normalized.append(lease)
+    conflicts = sorted(name for name, modes in modes_by_name.items() if len(modes) > 1)
+    if conflicts:
+        raise ValueError("conflicting read/write declarations: " + ", ".join(conflicts))
+    return normalized
+
+
+def leases_conflict(requested: str, held: str) -> bool:
+    """A write conflicts with every lease of its base name; reads coexist."""
+    requested_mode, requested_lease = normalize_resource(requested)
+    held_mode, held_lease = normalize_resource(held)
+    requested_name = requested_lease.split(":", 1)[1]
+    held_name = held_lease.split(":", 1)[1]
+    return requested_name == held_name and (
+        requested_mode == "write" or held_mode == "write"
+    )
+
+
 def validate_workflow_spec(spec: Any) -> list[dict[str, Any]]:
     """Pure, conservative validation of an authoring workflow specification."""
     findings: list[dict[str, Any]] = []
@@ -928,12 +992,29 @@ def validate_workflow_spec(spec: Any) -> list[dict[str, Any]]:
                         remediation=f"Provide {field} as a string list.",
                     )
                 )
+        resources = task.get("resources", [])
+        if isinstance(resources, list) and all(
+            isinstance(item, str) for item in resources
+        ):
+            try:
+                normalized_resources(resources)
+            except ValueError as error:
+                findings.append(
+                    finding(
+                        "invalid-resource-lease",
+                        "error",
+                        f"task {task_id} has invalid resources: {error}",
+                        task_ids=[task_id],
+                        remediation="Use read:<name>, write:<name>, or a non-empty legacy resource; do not mix read and write for one name.",
+                    )
+                )
         if (
             kind != "gate"
             and access == "default-tools"
             and not managed
             and not any(
-                isinstance(r, str) and r.startswith("worktree:")
+                isinstance(r, str)
+                and normalize_resource(r)[1].split(":", 1)[1].startswith("worktree:")
                 for r in task.get("resources", [])
             )
         ):
@@ -1144,9 +1225,13 @@ def create_workflow(
                     fail(f"task {task_id}: access must be read-only or default-tools")
                 resources = item.get("resources", [])
                 if not isinstance(resources, list) or not all(
-                    isinstance(x, str) and x for x in resources
+                    isinstance(x, str) for x in resources
                 ):
                     fail(f"task {task_id}: resources must be strings")
+                try:
+                    normalized_resources(resources)
+                except ValueError as error:
+                    fail(f"task {task_id}: invalid resources: {error}")
                 task_cwd = Path(item.get("cwd") or cwd).expanduser().resolve()
                 if not task_cwd.is_dir():
                     fail(f"task {task_id}: cwd is not a directory: {task_cwd}")
@@ -2045,25 +2130,53 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
                     )
                     continue
                 resources = parse_resources(task["resources"])
-                held = {
-                    row[0]
-                    for row in db.execute(
-                        "SELECT resource FROM resource_leases WHERE workflow_id=?",
-                        (workflow_id,),
+                try:
+                    requested_leases = normalized_resources(resources)
+                except ValueError as error:
+                    db.execute(
+                        "UPDATE tasks SET state='blocked',updated_at=? WHERE workflow_id=? AND id=?",
+                        (now(), workflow_id, task["id"]),
                     )
-                }
-                if held.intersection(resources):
+                    event(
+                        db,
+                        workflow_id,
+                        "task.blocked",
+                        task_id=task["id"],
+                        detail={"reason": f"invalid resource lease: {error}"},
+                    )
+                    continue
+                held_leases = [
+                    row[0] for row in db.execute("SELECT resource FROM resource_leases")
+                ]
+                conflicting_held = sorted(
+                    {
+                        normalize_resource(held)[1]
+                        for requested in requested_leases
+                        for held in held_leases
+                        if leases_conflict(requested, held)
+                    }
+                )
+                if conflicting_held:
                     event(
                         db,
                         workflow_id,
                         "scheduler.deferred",
                         task_id=task["id"],
-                        detail={"reason": "resource-held", "resources": resources},
+                        # Keep resources for existing event consumers; the named
+                        # lease fields expose compatibility decisions explicitly.
+                        detail={
+                            "reason": "resource-held",
+                            "resources": resources,
+                            "requestedLeases": requested_leases,
+                            "heldLeases": conflicting_held,
+                        },
                     )
                     continue
-                if task["access"] != "read-only" and not any(
-                    r.startswith("worktree:") for r in resources
-                ):
+                has_worktree = any(
+                    normalize_resource(r)[1].split(":", 1)[1].startswith("worktree:")
+                    for r in resources
+                )
+                if task["access"] != "read-only" and not has_worktree:
                     db.execute(
                         "UPDATE tasks SET state='blocked',updated_at=? WHERE workflow_id=? AND id=?",
                         (now(), workflow_id, task["id"]),
@@ -2157,7 +2270,7 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
                             detail={"error": str(error)},
                         )
                         continue
-                for resource in resources:
+                for resource in requested_leases:
                     db.execute(
                         "INSERT INTO resource_leases VALUES(?,?,?,?)",
                         (workflow_id, resource, attempt_id, now()),

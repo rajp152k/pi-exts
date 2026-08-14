@@ -113,6 +113,101 @@ class SchedulerSafetyTests(unittest.TestCase):
             ).fetchone()[0],
         )
 
+    def test_read_leases_share_and_writer_waits_for_their_release(self) -> None:
+        spec = {
+            "id": "rw-fixture",
+            "cwd": str(Path.cwd()),
+            "tmuxSession": "fixture-session",
+            "maxConcurrency": 3,
+            "tasks": [
+                {"id": "reader-one", "prompt": "Read one.", "resources": ["read:repo"]},
+                {"id": "reader-two", "prompt": "Read two.", "resources": ["read:repo"]},
+                {"id": "writer", "prompt": "Write.", "resources": ["write:repo"]},
+            ],
+        }
+        self.dispatcher.create_workflow(self.db, spec)
+        with self.db:
+            self.dispatcher.refresh(self.db, spec["id"])
+        launches: list[str] = []
+
+        def launch(**kwargs: Any) -> Path:
+            launches.append(kwargs["task_id"])
+            run_dir = kwargs["run_dir"]
+            run_dir.mkdir(parents=True, exist_ok=True)
+            self.dispatcher.write_json(
+                run_dir / "manifest.json",
+                {"state": "running", "tmux": {"paneId": "%rw", "windowId": "@rw"}},
+            )
+            return run_dir
+
+        with (
+            patch.object(self.dispatcher, "launch_worker", side_effect=launch),
+            patch.object(self.dispatcher, "window_exists", return_value=True),
+        ):
+            self.dispatcher.tick(self.db, spec["id"], self.root)
+            self.assertEqual(["reader-one", "reader-two"], launches)
+            leases = [
+                row[0]
+                for row in self.db.execute(
+                    "SELECT resource FROM resource_leases WHERE workflow_id=? ORDER BY resource",
+                    (spec["id"],),
+                )
+            ]
+            self.assertEqual(["read:repo", "read:repo"], leases)
+            deferred = self.db.execute(
+                "SELECT detail FROM events WHERE workflow_id=? AND type='scheduler.deferred'",
+                (spec["id"],),
+            ).fetchone()[0]
+            detail = self.dispatcher.json.loads(deferred)
+            self.assertEqual(["write:repo"], detail["requestedLeases"])
+            self.assertEqual(["read:repo"], detail["heldLeases"])
+            for (run_dir,) in self.db.execute(
+                "SELECT run_dir FROM attempts WHERE workflow_id=?", (spec["id"],)
+            ):
+                self.dispatcher.write_json(
+                    Path(run_dir) / "manifest.json",
+                    {
+                        "state": "completed",
+                        "finishedAt": self.dispatcher.now(),
+                        "tmux": {},
+                    },
+                )
+            self.dispatcher.tick(self.db, spec["id"], self.root)
+        self.assertEqual(["reader-one", "reader-two", "writer"], launches)
+
+    def test_resource_mode_validation_and_legacy_exclusivity(self) -> None:
+        base = {
+            "id": "invalid-resources",
+            "cwd": str(Path.cwd()),
+            "tmuxSession": "fixture-session",
+            "tasks": [{"id": "one", "prompt": "Test.", "resources": ["read:"]}],
+        }
+        malformed = [
+            item
+            for item in self.dispatcher.validate_spec(base)
+            if item["severity"] == "error"
+        ]
+        self.assertTrue(
+            any(item["code"] == "invalid-resource-lease" for item in malformed)
+        )
+        base["tasks"][0]["resources"] = ["read:repo", "write:repo"]
+        conflicting = [
+            item
+            for item in self.dispatcher.validate_spec(base)
+            if item["severity"] == "error"
+        ]
+        self.assertTrue(
+            any(item["code"] == "invalid-resource-lease" for item in conflicting)
+        )
+        with self.assertRaises(ValueError):
+            self.dispatcher.normalize_resource(":repo")
+        self.assertFalse(self.dispatcher.leases_conflict("read:repo", "read:repo"))
+        self.assertTrue(self.dispatcher.leases_conflict("write:repo", "read:repo"))
+        self.assertTrue(self.dispatcher.leases_conflict("read:repo", "write:repo"))
+        self.assertTrue(
+            self.dispatcher.leases_conflict("read:worktree:one", "worktree:one")
+        )
+
     def test_reconciliation_marks_failed_launch_and_releases_resources(self) -> None:
         with self.db:
             self.db.execute(
