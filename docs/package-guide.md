@@ -8,7 +8,7 @@ The root `package.json` exposes all `extensions/*/index.ts` files and `skills/*/
 | --- | --- |
 | `notify` | `rp152kpi:notify` extension |
 | `firefox` | `rp152kpi:firefox` extension and `firefox-browser` skill |
-| `tmux` | `tmux-control` and `pi-task-dispatch` skills |
+| `tmux` | `tmux-control`, `pi-task-dispatch`, and `orchestrate` skills |
 | `traces` | `rp152kpi:traces` extension and `pi-traces` skill |
 
 Named installs are additive: the configuration script preserves already selected resources for the same package source.

@@ -32,6 +32,6 @@ just test-firefox
 node integrations/firefox/bin/firefoxctl.mjs --help
 ```
 
-The wrapper uses the pinned `@mozilla/firefox-devtools-mcp@0.9.15` process through MCPorter. It scopes browser actions to an explicit tab index and serializes multi-call operations with a local lock.
+The wrapper uses the pinned `@mozilla/firefox-devtools-mcp@0.9.15` process through MCPorter. Commands that operate on a page require an explicit tab index; daemon, raw-tool, download, and dialog commands are global. It serializes multi-call page operations with a local lock.
 
 `just test-firefox` opens disposable local fixture pages, verifies observation geometry, guarded fill/select/click actions, synthetic keys, waits, stale-action rejection, dirty-observation retry, and closes its test tabs.

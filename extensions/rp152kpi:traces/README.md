@@ -18,5 +18,5 @@ Restart Pi after installation.
 
 - `traces_search` lists recent local traces or searches locally indexed trace events.
 - `traces_show` accepts a traces.com URL or bare trace ID and loads a bounded remote trace view.
-- Both tools return at most Pi's standard tool-output limit (2,000 lines or 50KB).
+- Successful CLI stdout is head-truncated at Pi's standard 2,000-line/50KB limit; a short notice is appended when material is omitted.
 - The extension only injects guidance; it does not upload or modify traces.

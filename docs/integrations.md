@@ -4,7 +4,7 @@ Install bundles using the [package guide](package-guide.md). Restart Pi after in
 
 ## Notify
 
-`rp152kpi:notify` displays a top-right tmux popup when Pi settles and is ready for input. It requires tmux 3.2 or newer. From Pi, run `/notify-test` to test it.
+`rp152kpi:notify` displays a top-right tmux popup when Pi settles and is ready for input. It requires tmux 3.2 or newer and Pi running in TUI mode from a tmux pane. From Pi, run `/notify-test` to test it; failed automatic popups do not interrupt a completed run.
 
 ## Traces
 
@@ -12,7 +12,7 @@ Install bundles using the [package guide](package-guide.md). Restart Pi after in
 
 - For a URL or trace ID, use `traces_show` directly.
 - For a local, recent, or previous trace, search first with `traces_search` and inspect the returned ID.
-- Results are bounded; do not infer omitted material from truncation.
+- Successful CLI stdout is head-truncated at Pi's standard 2,000-line/50KB limit; a short notice is appended when material is omitted. Do not infer omitted material from truncation.
 - The extension reads traces; it does not upload or modify them.
 
 ## tmux control

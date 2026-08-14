@@ -7,6 +7,7 @@ The popup identifies the current tmux session and window as `session:index.windo
 ## Requirements
 
 - tmux 3.2 or later (`display-popup` support)
+- Pi running in TUI mode from a tmux pane (`TMUX` and `TMUX_PANE`)
 
 ## Install
 
@@ -16,11 +17,11 @@ From a clone of [`rajp152k/pi-exts`](https://github.com/rajp152k/pi-exts):
 just install notify
 ```
 
-This installs the package globally with Pi and configures it to load only `rp152kpi:notify`. Restart Pi after installation.
+This installs the package with Pi and selects `rp152kpi:notify`. Named bundle selections are additive; an existing full-package installation remains unfiltered. Restart Pi after installation.
 
 ## Test
 
-Run this from Pi to send a notification immediately:
+Run this from Pi to send a notification immediately. Outside TUI mode or a tmux pane, it does nothing; failed automatic popups do not interrupt a completed run:
 
 ```text
 /notify-test

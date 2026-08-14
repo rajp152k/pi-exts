@@ -4,7 +4,7 @@ Thin Pi UI integration for the live Firefox browser-agent stack.
 
 It contributes:
 
-- `/firefox-on` to start MCPorter and connect to Firefox on demand
+- `/firefox-on` to check and connect to Firefox on demand
 - `/firefox-off` to stop MCPorter without closing Firefox
 - `/firefox-status` to inspect status without starting MCPorter
 - `/firefox-restart` to restart MCPorter's persistent Firefox transport

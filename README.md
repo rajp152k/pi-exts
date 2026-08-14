@@ -36,7 +36,7 @@ Install the Firefox extension and skill:
 just install firefox
 ```
 
-Install the tmux skills (`tmux-control` and `pi-task-dispatch`):
+Install the tmux skills (`tmux-control`, `pi-task-dispatch`, and `orchestrate`):
 
 ```bash
 just install tmux
@@ -54,6 +54,8 @@ Install every extension and skill:
 just all
 ```
 
+`just install <bundle>` and `just all` install `git:github.com/rajp152k/pi-exts`. Named bundle selections are additive; a full-package installation remains unfiltered.
+
 ## Firefox setup
 
 The Firefox integration requires an automation-enabled Firefox process and MCPorter:
@@ -64,9 +66,7 @@ just firefox-launch
 just firefox-doctor
 ```
 
-See [the integration README](integrations/firefox/README.md) and the [implementation plan](plans/firefox-browser-agent.md) for operating details and limitations.
-
-Both commands install the GitHub package with `pi install git:github.com/rajp152k/pi-exts`. A named install enables that integration's resources while preserving resources enabled by earlier named installs.
+See [the integration README](integrations/firefox/README.md) and [Firefox skill](skills/firefox-browser/SKILL.md) for operating details and limitations. The [implementation plan](plans/firefox-browser-agent.md) is historical.
 
 Update one installed extension:
 
