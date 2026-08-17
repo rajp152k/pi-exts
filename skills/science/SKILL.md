@@ -1,6 +1,6 @@
 ---
 name: science
-description: Apply scientific-method thinking to learning, claims, decisions, and software building: clarify questions, separate observations from interpretations, make falsifiable predictions, test alternatives, and update beliefs.
+description: Apply scientific-method thinking to learning, claims, decisions, and software building- clarify questions, separate observations from interpretations, make falsifiable predictions, test alternatives, and update beliefs.
 ---
 
 # Think scientifically
