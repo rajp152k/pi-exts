@@ -61,11 +61,12 @@ ROOT=/tmp/repo-scouts-runs
 task-dispatch --database "$DB" --root "$ROOT" workflow create --file workflow.json
 task-dispatch --database "$DB" --root "$ROOT" workflow start repo-scouts
 
+# Mandatory after every workflow start unless the user explicitly declines tmux UI observation.
 # This opens a separate tmux window in `tmuxSession`; it ticks every second.
 task-dispatch --database "$DB" --root "$ROOT" workflow watch repo-scouts
 ```
 
-The watcher prints an exact `tmux select-window` command. Its default board has four equal-width bordered columns: **Queued**, **Ready**, **In progress**, and **Terminated**. Terminal cards retain their state tag (`DONE`, `FAILED`, `CANCELLED`, `BLOCKED`, `ORPHANED`, or `LOST`); cards word-wrap phase, elapsed time, retry count, resource leases, and known tool/token/cost data. Critical-path, blocked, and ready-deferral annotations are visible on cards.
+The board is the required observable execution record, including for short workflows. Record and report the exact `tmux select-window` command that the watcher prints. Its default board has four equal-width bordered columns: **Queued**, **Ready**, **In progress**, and **Terminated**. Terminal cards retain their state tag (`DONE`, `FAILED`, `CANCELLED`, `BLOCKED`, `ORPHANED`, or `LOST`); cards word-wrap phase, elapsed time, retry count, resource leases, and known tool/token/cost data. Critical-path, blocked, and ready-deferral annotations are visible on cards.
 
 Controls are deliberately display-only except for `r`: `j`/`k` (or arrows) select, `d` shows bounded prompt/dependency/artifact/report/RPC/tmux details, `s`/`f`/`a` cycle state/resource/agent filters, `x` hides terminal cards for this screen only, and `0` restores them. `g` switches to the retained proportional Gantt attempt view. `r` performs an immediate tick and `q` exits. Hiding/resetting never deletes SQLite records or artifacts; use `workflow export` and `workflow events --jsonl` to preserve or export durable history. Pass `--no-drive` to observe without scheduling.
 
@@ -114,6 +115,8 @@ Use the refinement loop: validate; resolve agent-safe findings in the spec; ask 
 
 ## Observe, inspect, and collect
 
+Observe dispatched workflows through `workflow watch` at a bounded cadence. Supplement the board with the following machine-readable commands; they do not replace it. Only when the user explicitly declines tmux UI observation may bounded CLI polling substitute for the board.
+
 ```bash
 task-dispatch --database "$DB" workflow status repo-scouts --refresh
 task-dispatch --database "$DB" workflow inspect repo-scouts map-source
@@ -121,7 +124,7 @@ task-dispatch --database "$DB" workflow events repo-scouts --jsonl
 task-dispatch --database "$DB" workflow export repo-scouts > read-model.json
 ```
 
-Use a bounded shell loop when CLI-only monitoring is needed; do not leave unbounded polling running:
+When the user has explicitly declined tmux UI observation, use a bounded shell loop for CLI-only monitoring; do not leave unbounded polling running:
 
 ```bash
 for n in $(seq 1 30); do

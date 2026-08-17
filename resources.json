@@ -16,6 +16,9 @@
   "modelling": {
     "skills": ["skills/modelling/SKILL.md"]
   },
+  "science": {
+    "skills": ["skills/science/SKILL.md"]
+  },
   "traces": {
     "extensions": ["extensions/rp152kpi:traces/index.ts"],
     "skills": ["skills/pi-traces/SKILL.md"]

@@ -10,6 +10,7 @@ The root `package.json` exposes all `extensions/*/index.ts` files and `skills/*/
 | `firefox` | `rp152kpi:firefox` extension and `firefox-browser` skill |
 | `tmux` | `tmux-control`, `pi-task-dispatch`, and `orchestrate` skills |
 | `modelling` | `modelling` skill |
+| `science` | `science` skill |
 | `traces` | `rp152kpi:traces` extension and `pi-traces` skill |
 
 Named installs are additive: the configuration script preserves already selected resources for the same package source.
@@ -23,6 +24,7 @@ just install notify
 just install firefox
 just install tmux
 just install modelling
+just install science
 just install traces
 just all
 ```

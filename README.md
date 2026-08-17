@@ -21,6 +21,7 @@ Personal Pi extensions, organized under the `rp152kpi:<name>` namespace.
 - [`pi-task-dispatch`](skills/pi-task-dispatch): dispatches and monitors tmux-backed Pi workers, with SQLite-persisted dependency workflows, event observability, and a live board/Gantt watch.
 - [`orchestrate`](skills/orchestrate): turns a goal and discovery todo corpus into a reviewed, safely parallel task-dispatch graph and observable execution.
 - [`modelling`](skills/modelling): turns a context into a bounded, decision-relevant model specification with explicit uncertainty and validation.
+- [`science`](skills/science): applies scientific-method thinking to critically question claims, learning, and software.
 - [`rp152kpi:traces`](extensions/rp152kpi:traces): searches local trace indexes and loads bounded trace views through the `traces` CLI.
 
 ## Install
@@ -47,6 +48,12 @@ Install the modelling skill:
 
 ```bash
 just install modelling
+```
+
+Install the science skill:
+
+```bash
+just install science
 ```
 
 Install the traces extension and skill:
