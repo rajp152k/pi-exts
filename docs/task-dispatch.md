@@ -70,7 +70,7 @@ The board is the required observable execution record, including for short workf
 
 Controls are deliberately display-only except for `r`: `j`/`k` (or arrows) select, `d` shows bounded prompt/dependency/artifact/report/RPC/tmux details, `s`/`f`/`a` cycle state/resource/agent filters, `x` hides terminal cards for this screen only, and `0` restores them. `g` switches to the retained proportional Gantt attempt view. `r` performs an immediate tick and `q` exits. Hiding/resetting never deletes SQLite records or artifacts; use `workflow export` and `workflow events --jsonl` to preserve or export durable history. Pass `--no-drive` to observe without scheduling.
 
-Workflow workers share a dedicated `rpc-<workflow-id>` tmux inspector window. Each attempt gets a pane in that window, which keeps an anchor pane so later attempts can reuse it. The legacy `dispatch` command still opens one window per worker. A failed tmux create/split is recorded by normal outbox reconciliation rather than being treated as a successful launch.
+Workflow workers run one per tmux window in a derived detached session named `eph-<tmuxSession>` (for example, `eph-pi-exts`). This keeps worker geometry separate from the user's session and avoids tmux's minimum-pane-size limit. The workflow board remains in `tmuxSession`; attempt manifests record the derived worker session and its window/pane IDs. The legacy `dispatch` command still opens one window per worker in its requested session. A failed tmux session/window creation is recorded by normal outbox reconciliation rather than being treated as a successful launch.
 
 ## Draft a workflow from a goal
 

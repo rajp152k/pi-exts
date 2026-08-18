@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import suppress
 import curses
 import hashlib
 import json
@@ -16,9 +15,10 @@ import shutil
 import sqlite3
 import subprocess
 import sys
-import time
 import textwrap
+import time
 import uuid
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn
@@ -90,6 +90,18 @@ def window_exists(window_id: str) -> bool:
         ["tmux", "display-message", "-p", "-t", window_id, "#{window_id}"],
         text=True,
         capture_output=True,
+    )
+    return result.returncode == 0
+
+
+def ephemeral_session_name(session: str) -> str:
+    """Return the derived tmux session that owns workflow worker windows."""
+    return f"eph-{session}"
+
+
+def tmux_session_exists(session: str) -> bool:
+    result = subprocess.run(
+        ["tmux", "has-session", "-t", session], text=True, capture_output=True
     )
     return result.returncode == 0
 
@@ -183,9 +195,10 @@ def launch_worker(
         "--run-dir",
         str(run_dir),
     ]
+    worker_session = session
     if workflow:
-        window_id, pane_id = launch_workflow_rpc_pane(
-            session, str(workflow["id"]), command
+        worker_session, window_id, pane_id = launch_workflow_rpc_window(
+            session, str(workflow["id"]), task_id, command
         )
     else:
         # Preserve the legacy dispatch contract: one worker, one window.
@@ -211,66 +224,32 @@ def launch_worker(
         run_dir,
         state="running",
         startedAt=now(),
-        tmux={"session": session, "windowId": window_id, "paneId": pane_id},
+        tmux={"session": worker_session, "windowId": window_id, "paneId": pane_id},
     )
     (run_dir / "launch-ready").touch()
     return run_dir
 
 
-def launch_workflow_rpc_pane(
-    session: str, workflow_id: str, command: list[str]
-) -> tuple[str, str]:
-    """Launch in a reusable per-workflow inspector window via the tmux seam.
+def launch_workflow_rpc_window(
+    session: str, workflow_id: str, task_id: str, command: list[str]
+) -> tuple[str, str, str]:
+    """Launch every workflow worker in its own window of a derived session.
 
-    The anchor pane is deliberately left as tmux's normal shell, so completed
-    workers do not destroy the window and future attempts can reuse it.
+    Isolating workers from the user's source session avoids tmux's minimum-pane
+    geometry limit while retaining a deterministic, inspectable session name.
     """
-    name = f"rpc-{workflow_id}"[:40]
-    windows = run_tmux(
-        ["list-windows", "-t", session, "-F", "#{window_name}\t#{window_id}"]
-    )
-    window_id = next(
-        (
-            line.split("\t", 1)[1]
-            for line in windows.stdout.splitlines()
-            if line.partition("\t")[0] == name and "\t" in line
-        ),
-        None,
-    )
-    if window_id is None:
-        created = run_tmux(
-            [
-                "new-window",
-                "-d",
-                "-P",
-                "-F",
-                "#{window_id}",
-                "-t",
-                f"{session}:",
-                "-n",
-                name,
-            ]
-        )
-        window_id = created.stdout.strip()
-        if not window_id:
-            fail(f"unexpected tmux inspector response: {created.stdout!r}")
-    result = run_tmux(
-        [
-            "split-window",
-            "-d",
-            "-P",
-            "-F",
-            "#{window_id},#{pane_id}",
-            "-t",
-            window_id,
-            *command,
-        ]
-    )
+    worker_session = ephemeral_session_name(session)
+    name = f"rpc-{workflow_id}-{task_id}"[:40]
+    common = ["-d", "-P", "-F", "#{window_id},#{pane_id}", "-n", name]
+    if tmux_session_exists(worker_session):
+        result = run_tmux(["new-window", *common, "-t", f"{worker_session}:", *command])
+    else:
+        result = run_tmux(["new-session", *common, "-s", worker_session, *command])
     try:
-        returned_window, pane_id = result.stdout.strip().split(",", maxsplit=1)
+        window_id, pane_id = result.stdout.strip().split(",", maxsplit=1)
     except ValueError:
-        fail(f"unexpected tmux pane response: {result.stdout!r}")
-    return returned_window, pane_id
+        fail(f"unexpected tmux worker-window response: {result.stdout!r}")
+    return worker_session, window_id, pane_id
 
 
 # Legacy single-worker interface ------------------------------------------------

@@ -72,7 +72,7 @@ task-dispatch workflow events implementation-plan --follow
 task-dispatch workflow inspect implementation-plan map-relevant-modules
 ```
 
-`workflow watch implementation-plan` opens a dependency-aware live board in a new window of the workflow's configured tmux session. It drives reconciliation/scheduling by default and shows Queued, Ready, In progress, Done, Failed, Blocked, and Cancelled columns plus recent attempt timing. Press `r` to reconcile/schedule and `q` to exit. The command prints the exact `tmux select-window` target; use `--no-drive` for observation only.
+`workflow watch implementation-plan` opens a dependency-aware live board in a new window of the workflow's configured tmux session. Workflow workers themselves use one window each in a derived detached session, `eph-<tmuxSession>` (for example, `eph-pi-exts`), so worker panes never exhaust the source session's geometry. It drives reconciliation/scheduling by default and shows Queued, Ready, In progress, Done, Failed, Blocked, and Cancelled columns plus recent attempt timing. Press `r` to reconcile/schedule and `q` to exit. The command prints the exact `tmux select-window` target; use `--no-drive` for observation only.
 
 ### Validation and refinement
 

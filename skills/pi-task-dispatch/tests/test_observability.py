@@ -178,37 +178,37 @@ class ObservabilityTests(unittest.TestCase):
         self.assertEqual(["reader-a"], ready)
         self.assertIn("Gantt", self.d.watch_timeline_lines(projection, 80)[0])
 
-    def test_workflow_workers_reuse_inspector_window_through_tmux_seam(self) -> None:
+    def test_workflow_workers_use_derived_session_and_one_window_per_attempt(
+        self,
+    ) -> None:
         calls: list[list[str]] = []
 
         def fake_tmux(arguments: list[str], **_: Any) -> Any:
             calls.append(arguments)
-            output = {
-                "list-windows": "",
-                "new-window": "@7\n",
-                "split-window": "@7,%9\n",
-            }[arguments[0]]
-            return type("Result", (), {"stdout": output})()
+            return type("Result", (), {"stdout": "@7,%9\n"})()
 
-        with patch.object(self.d, "run_tmux", side_effect=fake_tmux):
-            target = self.d.launch_workflow_rpc_pane("unused", "fixture", ["worker"])
-        self.assertEqual(("@7", "%9"), target)
-        self.assertEqual(
-            ["list-windows", "new-window", "split-window"], [c[0] for c in calls]
-        )
+        with (
+            patch.object(self.d, "run_tmux", side_effect=fake_tmux),
+            patch.object(self.d, "tmux_session_exists", return_value=False),
+        ):
+            target = self.d.launch_workflow_rpc_window(
+                "pi-exts", "fixture", "reader", ["worker"]
+            )
+        self.assertEqual(("eph-pi-exts", "@7", "%9"), target)
+        self.assertEqual(["new-session"], [c[0] for c in calls])
+        self.assertIn("eph-pi-exts", calls[0])
+        self.assertNotIn("split-window", calls[0])
         calls.clear()
 
-        def fake_existing(arguments: list[str], **_: Any) -> Any:
-            calls.append(arguments)
-            output = (
-                "rpc-fixture\t@7\n" if arguments[0] == "list-windows" else "@7,%10\n"
+        with (
+            patch.object(self.d, "run_tmux", side_effect=fake_tmux),
+            patch.object(self.d, "tmux_session_exists", return_value=True),
+        ):
+            self.d.launch_workflow_rpc_window(
+                "pi-exts", "fixture", "writer", ["worker"]
             )
-            return type("Result", (), {"stdout": output})()
-
-        with patch.object(self.d, "run_tmux", side_effect=fake_existing):
-            self.d.launch_workflow_rpc_pane("unused", "fixture", ["worker"])
-        # A listed inspector is split, never recreated.
-        self.assertEqual(["list-windows", "split-window"], [c[0] for c in calls])
+        self.assertEqual(["new-window"], [c[0] for c in calls])
+        self.assertIn("eph-pi-exts:", calls[0])
 
     def test_fake_rpc_stream_settles_and_malformed_fails(self) -> None:
         for name, lines, expected in [
