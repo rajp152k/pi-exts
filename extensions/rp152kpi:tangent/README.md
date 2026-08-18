@@ -4,7 +4,7 @@ Adds `/tangent <query>`, which starts an interactive Pi tangent with an isolated
 
 ## Behavior
 
-- Seeds the tangent with only the two most recent visible assistant text responses from the active branch, plus the supplied query.
+- Seeds the tangent with the supplied query, then the most recent and penultimate visible assistant text responses from the active branch, each in explicit handoff tags.
 - Starts the tangent in a new tmux window in the current session and working directory.
 - Inherits the current Pi model and thinking level.
 - When Pi is not running inside tmux, starts a detached `tangent-…` tmux session and prints the command needed to attach to it.
