@@ -12,6 +12,7 @@ The root `package.json` exposes all `extensions/*/index.ts` files and `skills/*/
 | `modelling` | `modelling` skill |
 | `science` | `science` skill |
 | `traces` | `rp152kpi:traces` extension and `pi-traces` skill |
+| `tangent` | `rp152kpi:tangent` extension |
 
 Named installs are additive: the configuration script preserves already selected resources for the same package source.
 
@@ -26,6 +27,7 @@ just install tmux
 just install modelling
 just install science
 just install traces
+just install tangent
 just all
 ```
 

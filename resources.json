@@ -22,5 +22,8 @@
   "traces": {
     "extensions": ["extensions/rp152kpi:traces/index.ts"],
     "skills": ["skills/pi-traces/SKILL.md"]
+  },
+  "tangent": {
+    "extensions": ["extensions/rp152kpi:tangent/index.ts"]
   }
 }

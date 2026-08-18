@@ -23,6 +23,7 @@ Personal Pi extensions, organized under the `rp152kpi:<name>` namespace.
 - [`modelling`](skills/modelling): turns a context into a bounded, decision-relevant model specification with explicit uncertainty and validation.
 - [`science`](skills/science): applies scientific-method thinking to critically question claims, learning, and software.
 - [`rp152kpi:traces`](extensions/rp152kpi:traces): searches local trace indexes and loads bounded trace views through the `traces` CLI.
+- [`rp152kpi:tangent`](extensions/rp152kpi:tangent): opens an isolated Pi tangent in a new tmux window, seeded with the two latest assistant responses and a query.
 
 ## Install
 
@@ -60,6 +61,12 @@ Install the traces extension and skill:
 
 ```bash
 just install traces
+```
+
+Install the tangent extension:
+
+```bash
+just install tangent
 ```
 
 Install every extension and skill:
