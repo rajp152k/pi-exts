@@ -4,7 +4,7 @@ Personal Pi extensions, organized under the `rp152kpi:<name>` namespace.
 
 ## Plans
 
-- [Firefox browser-agent integration](plans/firefox-browser-agent.md)
+- [Coherence refactor deliberation](plans/coherence-refactor.md)
 
 ## Documentation
 
@@ -13,7 +13,7 @@ Personal Pi extensions, organized under the `rp152kpi:<name>` namespace.
 - [Integrations and skills](docs/integrations.md)
 - [Task-dispatch workflows](docs/task-dispatch.md)
 
-## Extensions
+## Capabilities
 
 - [`rp152kpi:notify`](extensions/rp152kpi:notify): shows a top-right tmux popup when Pi is ready for the next prompt.
 - [`rp152kpi:firefox`](extensions/rp152kpi:firefox): provides status and lifecycle controls for the live Firefox browser-agent integration.
@@ -87,7 +87,7 @@ just firefox-launch
 just firefox-doctor
 ```
 
-See [the integration README](integrations/firefox/README.md) and [Firefox skill](skills/firefox-browser/SKILL.md) for operating details and limitations. The [implementation plan](plans/firefox-browser-agent.md) is historical.
+See [the integration README](integrations/firefox/README.md) and [Firefox skill](skills/firefox-browser/SKILL.md) for operating details and limitations.
 
 Update one installed extension:
 
