@@ -1,4 +1,12 @@
-import { mkdir, mkdtemp, readFile, rename, rmdir, unlink, writeFile } from "node:fs/promises";
+import {
+	mkdir,
+	mkdtemp,
+	readFile,
+	rename,
+	rmdir,
+	unlink,
+	writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -196,59 +204,125 @@ async function openTangentWindow(
 	return { session: result.stdout.trim() || session, attached: false };
 }
 
-async function recordLatestOutput(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+async function recordLatestOutput(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+): Promise<void> {
 	const pane = process.env.TMUX_PANE;
 	const output = recentAssistantOutputs(ctx)[0];
 	if (!pane || !output) return;
-	const location = await pi.exec("tmux", ["display-message", "-p", "-t", pane, "#{session_name}.#{window_index}"], { timeout: 1_000 });
+	const location = await pi.exec(
+		"tmux",
+		["display-message", "-p", "-t", pane, "#{session_name}.#{window_index}"],
+		{ timeout: 1_000 },
+	);
 	if (location.code !== 0) return;
 	await mkdir(HANDOFF_DIRECTORY, { recursive: true, mode: 0o700 });
 	const file = join(HANDOFF_DIRECTORY, `${encodeURIComponent(pane)}.json`);
 	const temporary = `${file}.${process.pid}.tmp`;
-	await writeFile(temporary, JSON.stringify({ pane, location: location.stdout.trim(), output, updatedAt: Date.now() }), { mode: 0o600 });
+	await writeFile(
+		temporary,
+		JSON.stringify({
+			pane,
+			location: location.stdout.trim(),
+			output,
+			updatedAt: Date.now(),
+		}),
+		{ mode: 0o600 },
+	);
 	await rename(temporary, file);
 }
 
-function parseCatchup(args: string): { target: string; instructions: string } | undefined {
+function parseCatchup(
+	args: string,
+): { target: string; instructions: string } | undefined {
 	const match = args.match(/^\s*([^\s;]+)\s*(?:;\s*([\s\S]*))?$/);
 	if (!match) return undefined;
 	return { target: match[1], instructions: match[2]?.trim() ?? "" };
 }
 
-async function catchupSource(pi: ExtensionAPI, target: string): Promise<{ text: string; pi: boolean }> {
+async function catchupSource(
+	pi: ExtensionAPI,
+	target: string,
+): Promise<{ text: string; pi: boolean }> {
 	let location: string;
 	if (/^\d+$/.test(target)) {
 		const session = await currentTmuxSession(pi);
-		if (!session) throw new Error("/catchup <number> requires Pi to run inside tmux");
+		if (!session)
+			throw new Error("/catchup <number> requires Pi to run inside tmux");
 		location = `${session}.${target}`;
 	} else if (/^.+\.\d+$/.test(target)) location = target;
 	else throw new Error("Use /catchup <window> or /catchup <session>.<window>");
-	const pane = await pi.exec("tmux", ["display-message", "-p", "-t", location, "#{pane_id}"], { timeout: 1_000 });
-	if (pane.code !== 0) throw new Error(pane.stderr.trim() || `No such tmux window: ${location}`);
+	const pane = await pi.exec(
+		"tmux",
+		["display-message", "-p", "-t", location, "#{pane_id}"],
+		{ timeout: 1_000 },
+	);
+	if (pane.code !== 0)
+		throw new Error(pane.stderr.trim() || `No such tmux window: ${location}`);
 	try {
-		const saved = JSON.parse(await readFile(join(HANDOFF_DIRECTORY, `${encodeURIComponent(pane.stdout.trim())}.json`), "utf8")) as { output?: unknown };
-		if (typeof saved.output === "string" && saved.output) return { text: saved.output, pi: true };
-	} catch { /* no finalized Pi handoff */ }
-	const capture = await pi.exec("tmux", ["capture-pane", "-p", "-J", "-S", "-2000", "-t", location], { timeout: 3_000 });
-	if (capture.code !== 0) throw new Error(capture.stderr.trim() || "Could not capture tmux pane");
+		const saved = JSON.parse(
+			await readFile(
+				join(HANDOFF_DIRECTORY, `${encodeURIComponent(pane.stdout.trim())}.json`),
+				"utf8",
+			),
+		) as { output?: unknown };
+		if (typeof saved.output === "string" && saved.output)
+			return { text: saved.output, pi: true };
+	} catch {
+		/* no finalized Pi handoff */
+	}
+	const capture = await pi.exec(
+		"tmux",
+		["capture-pane", "-p", "-J", "-S", "-2000", "-t", location],
+		{ timeout: 3_000 },
+	);
+	if (capture.code !== 0)
+		throw new Error(capture.stderr.trim() || "Could not capture tmux pane");
 	return { text: capture.stdout, pi: false };
 }
 
 export default function tangentExtension(pi: ExtensionAPI) {
 	pi.on("agent_settled", async (_event, ctx) => {
-		try { await recordLatestOutput(pi, ctx); } catch { /* catchup persistence must not affect Pi */ }
+		try {
+			await recordLatestOutput(pi, ctx);
+		} catch {
+			/* catchup persistence must not affect Pi */
+		}
 	});
 
 	pi.registerCommand("catchup", {
 		description: "Catch up from a Pi tangent window",
 		handler: async (args, ctx) => {
 			const parsed = parseCatchup(args);
-			if (!parsed) { ctx.ui.notify("Usage: /catchup <window|session.window> ; optional instructions", "warning"); return; }
+			if (!parsed) {
+				ctx.ui.notify(
+					"Usage: /catchup <window|session.window> ; optional instructions",
+					"warning",
+				);
+				return;
+			}
 			try {
 				const source = await catchupSource(pi, parsed.target);
-				const prompt = ["Catch up with the following new findings.", source.pi ? "<tangent-final-output>" : "<tmux-capture>", source.text, source.pi ? "</tangent-final-output>" : "</tmux-capture>", parsed.instructions].filter(Boolean).join("\n\n");
-				pi.sendUserMessage(prompt, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
-			} catch (error) { ctx.ui.notify(error instanceof Error ? error.message : "Catchup failed", "error"); }
+				const prompt = [
+					"Catch up with the following new findings.",
+					source.pi ? "<tangent-final-output>" : "<tmux-capture>",
+					source.text,
+					source.pi ? "</tangent-final-output>" : "</tmux-capture>",
+					parsed.instructions,
+				]
+					.filter(Boolean)
+					.join("\n\n");
+				pi.sendUserMessage(
+					prompt,
+					ctx.isIdle() ? undefined : { deliverAs: "followUp" },
+				);
+			} catch (error) {
+				ctx.ui.notify(
+					error instanceof Error ? error.message : "Catchup failed",
+					"error",
+				);
+			}
 		},
 	});
 
