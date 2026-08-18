@@ -1,6 +1,6 @@
 # rp152kpi:tangent
 
-Adds `/tangent <query>`, which starts an interactive Pi tangent with an isolated context window.
+Adds `/tangent <query>` for an isolated Pi tangent and `/catchup` to bring its final findings back.
 
 ## Behavior
 
@@ -9,6 +9,7 @@ Adds `/tangent <query>`, which starts an interactive Pi tangent with an isolated
 - Inherits the current Pi model and thinking level.
 - When Pi is not running inside tmux, starts a detached `tangent-…` tmux session and prints the command needed to attach to it.
 - Does not send a model request or add context to the originating Pi session.
+- Persists each tmux Pi pane's latest finalized assistant response locally, so `/catchup 2 ; update docs` adds only that response to the current session. Use `/catchup session.2` for an explicit session; non-Pi panes fall back to their tmux capture.
 
 The seed is written to a mode-`0600` temporary file. The tangent process removes it when it exits; a launch failure removes it immediately.
 
