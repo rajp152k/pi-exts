@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import curses
 import hashlib
 import json
 import os
@@ -2990,7 +2989,7 @@ def watch_elapsed(started: str | None, finished: str | None) -> str:
 def watch_card_lines(
     task: dict[str, Any], width: int, selected: bool = False
 ) -> list[str]:
-    """Pure, deterministic card layout used by curses and unit tests."""
+    """Pure, deterministic card layout used by the Textual board and unit tests."""
     tag = task["state"].upper() if watch_bucket(task["state"]) == "terminated" else ""
     flags = " ".join(
         filter(
@@ -3035,7 +3034,7 @@ def watch_board_lines(
     filters: dict[str, str],
     hidden_terminal: set[str],
 ) -> tuple[list[str], list[str]]:
-    """Return equal-width bordered board lines plus visible task ids; no curses/DB."""
+    """Return equal-width bordered board lines plus visible task ids; no UI or DB."""
     column_width = max(12, width // 4)
     columns: dict[str, list[list[str]]] = {key: [] for key, _ in WATCH_COLUMNS}
     visible: list[str] = []
@@ -3087,7 +3086,7 @@ def watch_board_lines(
 def watch_details(task: dict[str, Any] | None) -> list[str]:
     """Bounded selected-card detail view; reading does not alter durable history."""
     if not task:
-        return ["Details: select a card with j/k or arrows."]
+        return ["Details: select a card with j/k."]
     attempt = task.get("attempts", [])[-1] if task.get("attempts") else {}
     run_dir = Path(attempt["run_dir"]) if attempt.get("run_dir") else None
     report_tail = rpc_tail = "-"
@@ -3108,105 +3107,203 @@ def watch_details(task: dict[str, Any] | None) -> list[str]:
     ]
 
 
-def draw_watch(
-    screen: Any, db: sqlite3.Connection, workflow_id: str, root: Path, drive: bool
+def run_textual_watch(
+    db: sqlite3.Connection, workflow_id: str, root: Path, drive: bool
 ) -> None:
-    screen.nodelay(True)
-    screen.timeout(500)
-    last_tick = 0.0
-    selected_id: str | None = None
-    details = False
-    gantt = False
-    hidden_terminal: set[str] = set()
-    filters = {"state": "all", "resource": "all", "agent": "all"}
-    while True:
-        if drive and time.monotonic() - last_tick >= 1:
-            with db:
-                tick(db, workflow_id, root)
-            last_tick = time.monotonic()
-        projection = workflow_projection(db, workflow_id)
-        resources = sorted(
-            {r for task in projection["tasks"] for r in task["resources"]}
+    """Run the scrollable Textual workflow board in the current terminal."""
+    try:
+        app_module = __import__("textual.app", fromlist=["App"])
+        containers_module = __import__(
+            "textual.containers", fromlist=["VerticalScroll"]
         )
-        agents = sorted({task["agent"] for task in projection["tasks"]})
-        height, width = screen.getmaxyx()
-        screen.erase()
-        header = f"{workflow_id} [{projection['workflow']['state']}] q quit r tick g gantt d details j/k select x hide terminal 0 reset s state f resource a agent"
-        screen.addnstr(0, 0, header, width - 1)
-        screen.hline(1, 0, ord("-"), max(0, width - 1))
-        board, visible = watch_board_lines(
-            projection, width, selected_id, filters, hidden_terminal
+        text_module = __import__("rich.text", fromlist=["Text"])
+        widgets_module = __import__("textual.widgets", fromlist=["Footer", "Static"])
+        App = app_module.App
+        VerticalScroll = containers_module.VerticalScroll
+        Text = text_module.Text
+        Footer = widgets_module.Footer
+        Static = widgets_module.Static
+    except ImportError:
+        fail(
+            "workflow watch requires Textual; install it with "
+            "python3 -m pip install -r skills/pi-task-dispatch/requirements.txt"
         )
-        if selected_id not in visible:
-            selected_id = visible[0] if visible else None
-        detail_lines = (
-            watch_details(
-                next((t for t in projection["tasks"] if t["id"] == selected_id), None)
+
+    class WorkflowWatchApp(App[None]):
+        TITLE = "Task dispatch"
+        CSS = """
+        Screen { layout: vertical; }
+        #watch-header { height: 2; padding: 0 1; }
+        #watch-board { height: 1fr; overflow: auto auto; }
+        #watch-content { width: auto; }
+        #watch-details { height: auto; max-height: 5; padding: 0 1; }
+        """
+        BINDINGS = [
+            ("q", "quit", "Quit"),
+            ("r", "tick", "Tick"),
+            ("g", "toggle_gantt", "Gantt"),
+            ("d", "toggle_details", "Details"),
+            ("j", "next_task", "Next task"),
+            ("k", "previous_task", "Previous task"),
+            ("x", "hide_terminal", "Hide terminal"),
+            ("0", "reset_hidden", "Reset"),
+            ("s", "cycle_state", "State"),
+            ("f", "cycle_resource", "Resource"),
+            ("a", "cycle_agent", "Agent"),
+        ]
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.last_tick = 0.0
+            self.selected_id: str | None = None
+            self.details = False
+            self.gantt = False
+            self.hidden_terminal: set[str] = set()
+            self.filters = {"state": "all", "resource": "all", "agent": "all"}
+            self.projection: dict[str, Any] = {}
+            self.visible: list[str] = []
+
+        def compose(self) -> Any:
+            yield Static(id="watch-header")
+            with VerticalScroll(id="watch-board"):
+                yield Static(id="watch-content")
+            yield Static(id="watch-details")
+            yield Footer()
+
+        def on_mount(self) -> None:
+            self.query_one("#watch-board", VerticalScroll).focus()
+            self.refresh_projection()
+            self.set_interval(0.5, self.refresh_projection)
+
+        def refresh_projection(self) -> None:
+            if drive and time.monotonic() - self.last_tick >= 1:
+                with db:
+                    tick(db, workflow_id, root)
+                self.last_tick = time.monotonic()
+            self.projection = workflow_projection(db, workflow_id)
+            width = max(12, self.size.width)
+            board, self.visible = watch_board_lines(
+                self.projection,
+                width,
+                self.selected_id,
+                self.filters,
+                self.hidden_terminal,
             )
-            if details
-            else []
-        )
-        content = watch_timeline_lines(projection, width) if gantt else board
-        content_limit = height - len(detail_lines) - 2
-        for y, line in enumerate(content, 2):
-            if y >= content_limit:
-                break
-            screen.addnstr(y, 0, line, width - 1)
-        status = f"filters state={filters['state']} resource={filters['resource']} agent={filters['agent']}  history preserved; export is non-destructive"
-        screen.addnstr(content_limit, 0, status, width - 1)
-        for offset, line in enumerate(detail_lines):
-            screen.addnstr(content_limit + 1 + offset, 0, line, width - 1)
-        screen.refresh()
-        key = screen.getch()
-        if key in (ord("q"), 27):
-            return
-        if key == ord("r"):
-            with db:
-                tick(db, workflow_id, root)
-            last_tick = time.monotonic()
-        elif key == ord("g"):
-            gantt = not gantt
-        elif key == ord("d"):
-            details = not details
-        elif key in (ord("j"), curses.KEY_DOWN) and visible:
-            selected_id = (
-                visible[(visible.index(selected_id) + 1) % len(visible)]
-                if selected_id in visible
-                else visible[0]
-            )
-        elif key in (ord("k"), curses.KEY_UP) and visible:
-            selected_id = (
-                visible[(visible.index(selected_id) - 1) % len(visible)]
-                if selected_id in visible
-                else visible[0]
-            )
-        elif key == ord("x"):
-            hidden_terminal.update(
-                t["id"] for t in projection["tasks"] if t["state"] in WATCH_TERMINAL
-            )
-        elif key == ord("0"):
-            hidden_terminal.clear()
-        elif key == ord("s"):
-            filters["state"] = ("all", "queued", "ready", "in_progress", "terminated")[
-                ("all", "queued", "ready", "in_progress", "terminated").index(
-                    filters["state"]
+            if self.selected_id not in self.visible:
+                self.selected_id = self.visible[0] if self.visible else None
+                board, self.visible = watch_board_lines(
+                    self.projection,
+                    width,
+                    self.selected_id,
+                    self.filters,
+                    self.hidden_terminal,
                 )
-                + 1
-                if filters["state"] != "terminated"
-                else 0
+            content = (
+                watch_timeline_lines(self.projection, width) if self.gantt else board
+            )
+            selected = next(
+                (
+                    task
+                    for task in self.projection["tasks"]
+                    if task["id"] == self.selected_id
+                ),
+                None,
+            )
+            header = (
+                f"{workflow_id} [{self.projection['workflow']['state']}]  "
+                "↑/↓/PgUp/PgDn/Home/End scroll; j/k select"
+            )
+            status = (
+                f"filters state={self.filters['state']} resource={self.filters['resource']} "
+                f"agent={self.filters['agent']}  history preserved; export is non-destructive"
+            )
+            detail_lines = watch_details(selected) if self.details else []
+            self.query_one("#watch-header", Static).update(Text(f"{header}\n{status}"))
+            self.query_one("#watch-content", Static).update(Text("\n".join(content)))
+            self.query_one("#watch-details", Static).update(
+                Text("\n".join(detail_lines))
+            )
+
+        def action_tick(self) -> None:
+            with db:
+                tick(db, workflow_id, root)
+            self.last_tick = time.monotonic()
+            self.refresh_projection()
+
+        def action_toggle_gantt(self) -> None:
+            self.gantt = not self.gantt
+            self.refresh_projection()
+
+        def action_toggle_details(self) -> None:
+            self.details = not self.details
+            self.refresh_projection()
+
+        def select_task(self, direction: int) -> None:
+            if not self.visible:
+                return
+            if self.selected_id in self.visible:
+                index = (self.visible.index(self.selected_id) + direction) % len(
+                    self.visible
+                )
+                self.selected_id = self.visible[index]
+            else:
+                self.selected_id = self.visible[0]
+            self.refresh_projection()
+
+        def action_next_task(self) -> None:
+            self.select_task(1)
+
+        def action_previous_task(self) -> None:
+            self.select_task(-1)
+
+        def action_hide_terminal(self) -> None:
+            self.hidden_terminal.update(
+                task["id"]
+                for task in self.projection.get("tasks", [])
+                if task["state"] in WATCH_TERMINAL
+            )
+            self.refresh_projection()
+
+        def action_reset_hidden(self) -> None:
+            self.hidden_terminal.clear()
+            self.refresh_projection()
+
+        def action_cycle_state(self) -> None:
+            values = ("all", "queued", "ready", "in_progress", "terminated")
+            self.filters["state"] = values[
+                (values.index(self.filters["state"]) + 1) % len(values)
             ]
-        elif key == ord("f"):
-            filters["resource"] = (resources + ["all"])[
-                (resources + ["all"]).index(filters["resource"]) + 1
-                if filters["resource"] in resources
-                else 0
-            ]
-        elif key == ord("a"):
-            filters["agent"] = (agents + ["all"])[
-                (agents + ["all"]).index(filters["agent"]) + 1
-                if filters["agent"] in agents
-                else 0
-            ]
+            self.refresh_projection()
+
+        def action_cycle_resource(self) -> None:
+            resources = sorted(
+                {
+                    resource
+                    for task in self.projection.get("tasks", [])
+                    for resource in task["resources"]
+                }
+            )
+            values = ("all", *resources)
+            self.filters["resource"] = (
+                values[(values.index(self.filters["resource"]) + 1) % len(values)]
+                if self.filters["resource"] in values
+                else "all"
+            )
+            self.refresh_projection()
+
+        def action_cycle_agent(self) -> None:
+            agents = sorted(
+                {task["agent"] for task in self.projection.get("tasks", [])}
+            )
+            values = ("all", *agents)
+            self.filters["agent"] = (
+                values[(values.index(self.filters["agent"]) + 1) % len(values)]
+                if self.filters["agent"] in values
+                else "all"
+            )
+            self.refresh_projection()
+
+    WorkflowWatchApp().run()
 
 
 def watch_timeline_lines(projection: dict[str, Any], width: int) -> list[str]:
@@ -3287,7 +3384,7 @@ def command_workflow_watch(args: argparse.Namespace) -> None:
         print(f"watch: {workflow['tmux_session']}:{window_id} ({pane_id})")
         print(f"attach: tmux select-window -t '{workflow['tmux_session']}:{window_id}'")
         return
-    curses.wrapper(draw_watch, db, args.id, Path(args.root).expanduser(), args.drive)
+    run_textual_watch(db, args.id, Path(args.root).expanduser(), args.drive)
 
 
 def build_parser() -> argparse.ArgumentParser:

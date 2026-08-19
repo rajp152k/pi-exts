@@ -1,7 +1,7 @@
 ---
 name: pi-task-dispatch
 description: Dispatch, monitor, cancel, and collect bounded one-shot Pi task workers in tmux. Use for parallel read-only scouting, reviews, diagnostics, or isolated worktree tasks that need a durable handoff for a primary Pi agent to consolidate.
-compatibility: Requires Python 3, tmux, Pi on PATH, and an explicit target tmux session. Workers use the configured Pi credentials and resources.
+compatibility: Requires Python 3, tmux, Pi on PATH, Textual (`pip install -r skills/pi-task-dispatch/requirements.txt`), and an explicit target tmux session. Workers use the configured Pi credentials and resources.
 ---
 
 # Pi task dispatch
@@ -72,7 +72,7 @@ task-dispatch workflow events implementation-plan --follow
 task-dispatch workflow inspect implementation-plan map-relevant-modules
 ```
 
-`workflow watch implementation-plan` opens a dependency-aware live board in a new window of the workflow's configured tmux session. Workflow workers themselves use one window each in a derived detached session, `eph-<tmuxSession>` (for example, `eph-pi-exts`), so worker panes never exhaust the source session's geometry. It drives reconciliation/scheduling by default and shows Queued, Ready, In progress, Done, Failed, Blocked, and Cancelled columns plus recent attempt timing. Press `r` to reconcile/schedule and `q` to exit. The command prints the exact `tmux select-window` target; use `--no-drive` for observation only.
+`workflow watch implementation-plan` opens a dependency-aware Textual live board in a new window of the workflow's configured tmux session. Workflow workers themselves use one window each in a derived detached session, `eph-<tmuxSession>` (for example, `eph-pi-exts`), so worker panes never exhaust the source session's geometry. It drives reconciliation/scheduling by default and shows Queued, Ready, In progress, Done, Failed, Blocked, and Cancelled columns plus recent attempt timing. The board scrolls vertically with arrows, Page Up/Down, Home/End, or the mouse wheel when tasks exceed the screen. Press `r` to reconcile/schedule and `q` to exit. The command prints the exact `tmux select-window` target; use `--no-drive` for observation only.
 
 ### Validation and refinement
 
