@@ -37,7 +37,7 @@ Every task needs:
 - a stable lowercase-hyphen ID;
 - `objective`, bounded `deliverable`, `completionEvidence`, and compact `handoff`;
 - inputs/artifacts it needs and a concrete prompt;
-- `access` (`read-only` by default or `default-tools` for a writer);
+- `access` (`read-only` by default or `default-tools` for a writer). Every dispatched RPC worker has shell (`bash`) access for bounded inspection, diagnostics, and test commands; read-only workers must not use it to modify files;
 - cwd/worktree, declared `writePaths` if it writes, resource tags, and real dependencies;
 - a failure/blocked condition and, if needed, bounded retry/deadline policy.
 

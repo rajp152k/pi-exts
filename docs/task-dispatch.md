@@ -109,7 +109,7 @@ Use the refinement loop: validate; resolve agent-safe findings in the spec; ask 
 - `maxConcurrency` caps simultaneous attempts.
 - Resource leases support `read:<name>` (shared) and `write:<name>` (exclusive); a writer conflicts with every read/write lease of the same name. Untagged legacy resources, including `worktree:<name>`, remain exclusive.
 - A task cannot declare both `read:<name>` and `write:<name>` for the same name.
-- `read-only` is the default safe mode for discovery/review.
+- `read-only` is the default safe mode for discovery/review. Every RPC worker, including a read-only worker, receives `bash` for bounded inspection, diagnostics, and test commands; its task contract still prohibits file modifications.
 - A `default-tools` task must use a dedicated worktree and declare a `worktree:<name>` resource. Do not dispatch coupled writers in one checkout.
 - The Markdown importer accepts `- [ ]` items and only recognizes dependencies written as `<!-- depends: task-id -->`; it does not infer graph edges from prose.
 

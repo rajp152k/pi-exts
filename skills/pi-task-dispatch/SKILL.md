@@ -37,7 +37,7 @@ Before dispatching, state all of the following:
 1. objective and expected deliverable;
 2. explicit tmux session, discovered with `tmux list-sessions`;
 3. cwd or dedicated worktree;
-4. access scope (`--read-only` by default; write access only when explicitly requested);
+4. access scope (`--read-only` by default; write access only when explicitly requested). Every RPC worker has `bash` for bounded inspection, diagnostics, and test commands; read-only workers must not use it to modify files;
 5. completion condition and handoff format;
 6. monitoring interval and maximum duration.
 

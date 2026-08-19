@@ -210,6 +210,22 @@ class ObservabilityTests(unittest.TestCase):
         self.assertEqual(["new-window"], [c[0] for c in calls])
         self.assertIn("eph-pi-exts:", calls[0])
 
+    def test_read_only_rpc_workers_receive_shell_access(self) -> None:
+        command = self.d.rpc_command({"id": "reader", "access": "read-only"})
+        self.assertEqual(
+            [
+                "pi",
+                "--mode",
+                "rpc",
+                "--no-session",
+                "--name",
+                "reader",
+                "--tools",
+                "read,grep,find,ls,bash",
+            ],
+            command,
+        )
+
     def test_fake_rpc_stream_settles_and_malformed_fails(self) -> None:
         for name, lines, expected in [
             (

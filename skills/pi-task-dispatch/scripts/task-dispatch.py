@@ -25,7 +25,9 @@ from typing import Any, NoReturn
 
 DEFAULT_ROOT = Path.home() / ".pi" / "agent" / "task-runs"
 DEFAULT_DATABASE = Path.home() / ".pi" / "agent" / "workflows.db"
-READ_ONLY_TOOLS = "read,grep,find,ls"
+# Read-only tasks remain prohibited from modifying the checkout by their task contract,
+# but need a shell for bounded inspection, diagnostics, and test commands.
+READ_ONLY_TOOLS = "read,grep,find,ls,bash"
 RPC_CANCEL_GRACE = 5.0
 SCHEDULER_LEASE_SECONDS = 300.0
 RUN_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
@@ -305,6 +307,17 @@ def render_rpc_event(event: dict[str, Any]) -> None:
         print(f"[rpc] rejected: {event.get('error', 'unknown error')}", flush=True)
 
 
+def rpc_command(manifest: dict[str, Any]) -> list[str]:
+    """Build the Pi RPC command for an attempt's declared access scope."""
+    override = os.environ.get("TASK_DISPATCH_RPC_COMMAND")
+    if override:
+        return shlex.split(override)
+    command = ["pi", "--mode", "rpc", "--no-session", "--name", manifest["id"]]
+    if manifest["access"] == "read-only":
+        command.extend(["--tools", READ_ONLY_TOOLS])
+    return command
+
+
 def command_worker(args: argparse.Namespace) -> None:
     run_dir = run_dir_from(args.run_dir)
     for _ in range(100):
@@ -324,14 +337,7 @@ def command_worker(args: argparse.Namespace) -> None:
     event_log = run_dir / "events.jsonl"
     # Test seam: an explicit command can emulate Pi's JSONL RPC protocol. It is
     # intentionally opt-in so production invocation remains exactly unchanged.
-    override = os.environ.get("TASK_DISPATCH_RPC_COMMAND")
-    command = (
-        shlex.split(override)
-        if override
-        else ["pi", "--mode", "rpc", "--no-session", "--name", manifest["id"]]
-    )
-    if not override and manifest["access"] == "read-only":
-        command.extend(["--tools", READ_ONLY_TOOLS])
+    command = rpc_command(manifest)
     try:
         process = subprocess.Popen(
             command,
