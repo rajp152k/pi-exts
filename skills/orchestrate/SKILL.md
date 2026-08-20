@@ -20,13 +20,17 @@ SQLite is authoritative for workflow state, immutable spec revisions, attempts, 
 Before creating a graph, establish:
 
 1. goal, desired outcome, and integrated acceptance checks;
-2. repository/cwd and explicit tmux session, discovered with `tmux list-sessions`;
+2. repository/cwd, the origin tmux pane/session, and an explicit execution tmux session; discover both rather than selecting an arbitrary listed session;
 3. read-only, isolated writing, or human-gated work;
 4. useful `maxConcurrency` and scarce/exclusive resources;
 5. the required handoff: status, decisions, files changed or `read-only`, commands/tests, risks/open questions, and next action;
 6. bounded observation cadence and maximum duration, ending in a terminal-state progress report.
 
 For an end-to-end orchestration request, remain in the execution loop after dispatch: do not settle or ask for unrelated input while any task is nonterminal. Observe at the declared cadence until terminal, then consolidate the authoritative workflow/task/attempt state and report progress, evidence, failures, and the next action. If the declared maximum duration expires, report the still-active state and continue only with the user's direction; never imply completion from pane text.
+
+### Session affinity
+
+Default the workflow's `tmuxSession` to the session containing the initiating Pi pane. Establish it with `tmux display-message -p -t "$TMUX_PANE" '#{session_name}'`, not from the active/attached session or a convenient prior workflow. Do not dispatch an orchestration originating in one session into another session. A cross-session board/workflow is permitted only after the user explicitly names both origin and destination and authorizes that routing; record that exception in the workflow handoff and final report. A Pi conversation/session name alone is not a reliable tmux-routing identity—ask rather than guessing when the originating pane cannot be established.
 
 Do not dispatch coupled edits in one checkout, concurrent browser agents, destructive operations, migrations, or work requiring a live conversation. A worker is one-shot; make a follow-up a new task that cites the prior artifact.
 
@@ -121,7 +125,7 @@ A revision with findings enters `refining`, and the scheduler will not dispatch 
 
 ## 6. Dispatch and observe
 
-**The tmux board is mandatory for every dispatched workflow.** Immediately after `workflow start`, launch `workflow watch` in the declared tmux session and report the window target it prints. Do this even for small or expected-to-finish-quickly workflows: it is the required observable execution record, not an optional convenience. The only exception is when the user explicitly declines tmux UI observation; state that exception and use bounded `status --refresh` polling instead. Do not substitute ad hoc `tick`/`status` polling for the board when the board is available.
+**The tmux board is mandatory for every dispatched workflow.** Immediately after `workflow start`, launch `workflow watch` in the declared, session-affine tmux session and report the window target it prints. Do this even for small or expected-to-finish-quickly workflows: it is the required observable execution record, not an optional convenience. The only exception is when the user explicitly declines tmux UI observation; state that exception and use bounded `status --refresh` polling instead. Do not substitute ad hoc `tick`/`status` polling for the board when the board is available.
 
 For a new or experimental workflow, isolate its database and artifacts:
 
