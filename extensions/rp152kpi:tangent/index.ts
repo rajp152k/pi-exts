@@ -235,16 +235,25 @@ async function recordLatestOutput(
 
 function parseCatchup(
 	args: string,
-): { target: string; instructions: string } | undefined {
-	const match = args.match(/^\s*([^\s;]+)\s*(?:;\s*([\s\S]*))?$/);
+):
+	| { target: string; instructions: string; allowCapture: boolean }
+	| undefined {
+	const match = args.match(
+		/^\s*([^\s;]+)(?:\s+(--capture))?\s*(?:;\s*([\s\S]*))?$/,
+	);
 	if (!match) return undefined;
-	return { target: match[1], instructions: match[2]?.trim() ?? "" };
+	return {
+		target: match[1],
+		allowCapture: match[2] === "--capture",
+		instructions: match[3]?.trim() ?? "",
+	};
 }
 
 async function catchupSource(
 	pi: ExtensionAPI,
 	target: string,
-): Promise<{ text: string; pi: boolean }> {
+	allowCapture: boolean,
+): Promise<{ text: string; source: "assistant-response" | "tmux-capture" }> {
 	let location: string;
 	if (/^\d+$/.test(target)) {
 		const session = await currentTmuxSession(pi);
@@ -260,18 +269,28 @@ async function catchupSource(
 	);
 	if (pane.code !== 0)
 		throw new Error(pane.stderr.trim() || `No such tmux window: ${location}`);
+	const paneId = pane.stdout.trim();
 	try {
 		const saved = JSON.parse(
 			await readFile(
-				join(HANDOFF_DIRECTORY, `${encodeURIComponent(pane.stdout.trim())}.json`),
+				join(HANDOFF_DIRECTORY, `${encodeURIComponent(paneId)}.json`),
 				"utf8",
 			),
-		) as { output?: unknown };
-		if (typeof saved.output === "string" && saved.output)
-			return { text: saved.output, pi: true };
+		) as { pane?: unknown; location?: unknown; output?: unknown };
+		if (
+			saved.pane === paneId &&
+			saved.location === location &&
+			typeof saved.output === "string" &&
+			saved.output
+		)
+			return { text: saved.output, source: "assistant-response" };
 	} catch {
-		/* no finalized Pi handoff */
+		/* no valid finalized Pi handoff */
 	}
+	if (!allowCapture)
+		throw new Error(
+			`No persisted finalized response for ${location}. Retry with /catchup ${target} --capture to send the bounded pane scrollback.`,
+		);
 	const capture = await pi.exec(
 		"tmux",
 		["capture-pane", "-p", "-J", "-S", "-2000", "-t", location],
@@ -279,7 +298,7 @@ async function catchupSource(
 	);
 	if (capture.code !== 0)
 		throw new Error(capture.stderr.trim() || "Could not capture tmux pane");
-	return { text: capture.stdout, pi: false };
+	return { text: capture.stdout, source: "tmux-capture" };
 }
 
 export default function tangentExtension(pi: ExtensionAPI) {
@@ -297,18 +316,30 @@ export default function tangentExtension(pi: ExtensionAPI) {
 			const parsed = parseCatchup(args);
 			if (!parsed) {
 				ctx.ui.notify(
-					"Usage: /catchup <window|session.window> ; optional instructions",
+					"Usage: /catchup <window|session.window> [--capture] ; optional instructions",
 					"warning",
 				);
 				return;
 			}
 			try {
-				const source = await catchupSource(pi, parsed.target);
+				const source = await catchupSource(
+					pi,
+					parsed.target,
+					parsed.allowCapture,
+				);
+				const savedResponse = source.source === "assistant-response";
+				if (!savedResponse)
+					ctx.ui.notify(
+						"Sending a bounded tmux capture, not a persisted assistant response.",
+						"warning",
+					);
 				const prompt = [
 					"Catch up with the following new findings.",
-					source.pi ? "<tangent-final-output>" : "<tmux-capture>",
+					savedResponse
+						? "<tangent-final-output>"
+						: "<tmux-capture max-lines=\"2000\">",
 					source.text,
-					source.pi ? "</tangent-final-output>" : "</tmux-capture>",
+					savedResponse ? "</tangent-final-output>" : "</tmux-capture>",
 					parsed.instructions,
 				]
 					.filter(Boolean)
