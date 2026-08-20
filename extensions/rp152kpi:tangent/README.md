@@ -9,7 +9,7 @@ Adds `/tangent <query>` for an isolated Pi tangent and `/catchup` to bring its l
 - Inherits the current Pi model and thinking level.
 - When Pi is not running inside tmux, starts a detached `tangent-…` tmux session and prints the command needed to attach to it.
 - Does not send a model request or add context to the originating Pi session.
-- Persists each tmux Pi pane's latest finalized assistant response locally, so `/catchup 2 ; update docs` sends that response to the current session. `/catchup <window>` requires the receiving Pi to run inside tmux; otherwise use `/catchup session.2`. If no validated persisted response exists, `/catchup` stops with a warning rather than silently sending scrollback. Use `/catchup <target> --capture` to explicitly send the last 2,000 captured pane lines; Pi labels that source as a bounded tmux capture.
+- Persists each tmux Pi pane's latest finalized assistant response locally, so `/catchup 2 ; update docs` sends that response to the current session. Targets may name a window (`session.window`) or a specific pane (`session.window.pane`, for example `pi-exts.0.1`). `/catchup <window>` requires the receiving Pi to run inside tmux; otherwise use an explicit session target. If no validated persisted response exists, `/catchup` stops with a warning rather than silently sending scrollback. Use `/catchup <target> --capture` to explicitly send the last 2,000 captured pane lines; Pi labels that source as a bounded tmux capture.
 
 The seed is written to a mode-`0600` temporary file. The tangent process removes it when it exits; a launch failure removes it immediately.
 
@@ -35,6 +35,7 @@ Restart Pi after installation.
 /tangent Investigate why the last proposed approach may fail.
 /catchup 2 ; summarize the findings
 /catchup tangent-session.2 --capture ; inspect the bounded pane capture
+/catchup pi-exts.0.1 ; catch up from one explicit pane
 ```
 
 When invoked outside tmux, attach to the reported detached session:

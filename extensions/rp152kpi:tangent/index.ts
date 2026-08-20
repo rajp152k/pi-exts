@@ -255,16 +255,31 @@ async function catchupSource(
 	allowCapture: boolean,
 ): Promise<{ text: string; source: "assistant-response" | "tmux-capture" }> {
 	let location: string;
+	let tmuxTarget: string;
 	if (/^\d+$/.test(target)) {
 		const session = await currentTmuxSession(pi);
 		if (!session)
 			throw new Error("/catchup <number> requires Pi to run inside tmux");
 		location = `${session}.${target}`;
-	} else if (/^.+\.\d+$/.test(target)) location = target;
-	else throw new Error("Use /catchup <window> or /catchup <session>.<window>");
+		tmuxTarget = location;
+	} else {
+		const paneTarget = target.match(/^(.+)\.(\d+)\.(\d+)$/);
+		if (paneTarget) {
+			const [, session, window, pane] = paneTarget;
+			location = `${session}.${window}`;
+			tmuxTarget = `${session}:${window}.${pane}`;
+		} else if (/^.+\.\d+$/.test(target)) {
+			location = target;
+			tmuxTarget = target;
+		} else {
+			throw new Error(
+				"Use /catchup <window>, <session>.<window>, or <session>.<window>.<pane>",
+			);
+		}
+	}
 	const pane = await pi.exec(
 		"tmux",
-		["display-message", "-p", "-t", location, "#{pane_id}"],
+		["display-message", "-p", "-t", tmuxTarget, "#{pane_id}"],
 		{ timeout: 1_000 },
 	);
 	if (pane.code !== 0)
@@ -293,7 +308,7 @@ async function catchupSource(
 		);
 	const capture = await pi.exec(
 		"tmux",
-		["capture-pane", "-p", "-J", "-S", "-2000", "-t", location],
+		["capture-pane", "-p", "-J", "-S", "-2000", "-t", tmuxTarget],
 		{ timeout: 3_000 },
 	);
 	if (capture.code !== 0)
@@ -316,7 +331,7 @@ export default function tangentExtension(pi: ExtensionAPI) {
 			const parsed = parseCatchup(args);
 			if (!parsed) {
 				ctx.ui.notify(
-					"Usage: /catchup <window|session.window> [--capture] ; optional instructions",
+					"Usage: /catchup <window|session.window|session.window.pane> [--capture] ; optional instructions",
 					"warning",
 				);
 				return;
