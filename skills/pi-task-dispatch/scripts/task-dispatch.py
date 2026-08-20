@@ -529,8 +529,9 @@ def db_connect(value: str) -> sqlite3.Connection:
     CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, run_dir TEXT NOT NULL, state TEXT NOT NULL, tmux_pane TEXT, started_at TEXT NOT NULL, finished_at TEXT, exit_code INTEGER, error TEXT);
     CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL, task_id TEXT, attempt_id TEXT, type TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS resource_leases (workflow_id TEXT NOT NULL, resource TEXT NOT NULL, attempt_id TEXT NOT NULL, acquired_at TEXT NOT NULL, PRIMARY KEY(workflow_id,resource,attempt_id));
-    CREATE TABLE IF NOT EXISTS scheduler_leases (workflow_id TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at REAL NOT NULL);
+    CREATE TABLE IF NOT EXISTS scheduler_leases (workflow_id TEXT PRIMARY KEY, owner TEXT NOT NULL, generation INTEGER NOT NULL DEFAULT 1, expires_at REAL NOT NULL);
     CREATE TABLE IF NOT EXISTS dispatch_outbox (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id) ON DELETE CASCADE, workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, run_dir TEXT NOT NULL, state TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, error TEXT);
+    CREATE TABLE IF NOT EXISTS dispatch_launch_claims (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id) ON DELETE CASCADE, owner TEXT NOT NULL, generation INTEGER NOT NULL, claimed_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS workflow_specs (workflow_id TEXT PRIMARY KEY REFERENCES workflows(id) ON DELETE CASCADE, spec TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS workflow_revisions (workflow_id TEXT NOT NULL REFERENCES workflows(id) ON DELETE CASCADE, revision INTEGER NOT NULL, spec TEXT NOT NULL, content_hash TEXT NOT NULL, rationale TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, PRIMARY KEY(workflow_id,revision), UNIQUE(workflow_id,content_hash));
     CREATE TABLE IF NOT EXISTS revision_findings (workflow_id TEXT NOT NULL, revision INTEGER NOT NULL, finding TEXT NOT NULL, PRIMARY KEY(workflow_id,revision,finding), FOREIGN KEY(workflow_id,revision) REFERENCES workflow_revisions(workflow_id,revision) ON DELETE CASCADE);
@@ -563,6 +564,11 @@ def db_connect(value: str) -> sqlite3.Connection:
     with suppress(sqlite3.OperationalError):
         db.execute(
             "ALTER TABLE tasks ADD COLUMN cleanup_policy TEXT NOT NULL DEFAULT 'clean'"
+        )
+    # Lease generations fence a successor from committing a predecessor's work.
+    with suppress(sqlite3.OperationalError):
+        db.execute(
+            "ALTER TABLE scheduler_leases ADD COLUMN generation INTEGER NOT NULL DEFAULT 1"
         )
     # Older databases allowed only one holder per resource. Rebuild this small,
     # standalone table so compatible read leases can coexist.
@@ -1330,46 +1336,99 @@ def parse_resources(value: str) -> list[str]:
     return result
 
 
+SchedulerFence = tuple[str, int]
+
+
 def acquire_scheduler_lease(
     db: sqlite3.Connection,
     workflow_id: str,
     *,
     owner: str | None = None,
     lease_seconds: float = SCHEDULER_LEASE_SECONDS,
-) -> str | None:
-    """Acquire the workflow scheduler lease, reclaiming only an expired owner."""
+) -> SchedulerFence | None:
+    """Acquire `(owner, generation)`, incrementing generation on expiry takeover."""
     owner = owner or uuid.uuid4().hex
     try:
         db.execute("BEGIN IMMEDIATE")
-        db.execute(
-            "DELETE FROM scheduler_leases WHERE workflow_id=? AND expires_at<=?",
-            (workflow_id, time.time()),
+        current = db.execute(
+            "SELECT owner,generation,expires_at FROM scheduler_leases WHERE workflow_id=?",
+            (workflow_id,),
+        ).fetchone()
+        if current is None:
+            generation = 1
+            db.execute(
+                "INSERT INTO scheduler_leases(workflow_id,owner,generation,expires_at) VALUES(?,?,?,?)",
+                (workflow_id, owner, generation, time.time() + lease_seconds),
+            )
+        elif current["expires_at"] <= time.time():
+            generation = current["generation"] + 1
+            changed = db.execute(
+                "UPDATE scheduler_leases SET owner=?,generation=?,expires_at=? "
+                "WHERE workflow_id=? AND owner=? AND generation=? AND expires_at<=?",
+                (
+                    owner,
+                    generation,
+                    time.time() + lease_seconds,
+                    workflow_id,
+                    current["owner"],
+                    current["generation"],
+                    time.time(),
+                ),
+            ).rowcount
+            if not changed:
+                db.rollback()
+                return None
+        else:
+            db.rollback()
+            return None
+        event(
+            db,
+            workflow_id,
+            "scheduler.lease-acquired",
+            detail={"owner": owner, "generation": generation},
         )
-        acquired = db.execute(
-            "INSERT OR IGNORE INTO scheduler_leases VALUES(?,?,?)",
-            (workflow_id, owner, time.time() + lease_seconds),
-        ).rowcount
-        if acquired:
-            event(db, workflow_id, "scheduler.lease-acquired", detail={"owner": owner})
-            db.commit()
-            return owner
-        db.rollback()
-        return None
-    except sqlite3.OperationalError as _error:
+        db.commit()
+        return owner, generation
+    except sqlite3.OperationalError:
         if db.in_transaction:
             db.rollback()
         return None
 
 
+def scheduler_fence_current(
+    db: sqlite3.Connection, workflow_id: str, fence: SchedulerFence
+) -> bool:
+    """Whether this exact scheduler incarnation still owns an unexpired lease."""
+    return (
+        db.execute(
+            "SELECT 1 FROM scheduler_leases WHERE workflow_id=? AND owner=? AND generation=? AND expires_at>?",
+            (workflow_id, fence[0], fence[1], time.time()),
+        ).fetchone()
+        is not None
+    )
+
+
+def require_scheduler_fence(
+    db: sqlite3.Connection, workflow_id: str, fence: SchedulerFence
+) -> None:
+    if not scheduler_fence_current(db, workflow_id, fence):
+        raise RuntimeError("scheduler lease fence was lost")
+
+
 def release_scheduler_lease(
-    db: sqlite3.Connection, workflow_id: str, owner: str
+    db: sqlite3.Connection, workflow_id: str, fence: SchedulerFence
 ) -> None:
     with db:
         if db.execute(
-            "DELETE FROM scheduler_leases WHERE workflow_id=? AND owner=?",
-            (workflow_id, owner),
+            "UPDATE scheduler_leases SET expires_at=0 WHERE workflow_id=? AND owner=? AND generation=?",
+            (workflow_id, fence[0], fence[1]),
         ).rowcount:
-            event(db, workflow_id, "scheduler.lease-released", detail={"owner": owner})
+            event(
+                db,
+                workflow_id,
+                "scheduler.lease-released",
+                detail={"owner": fence[0], "generation": fence[1]},
+            )
 
 
 def workflow_row(db: sqlite3.Connection, workflow_id: str) -> sqlite3.Row:
@@ -2012,9 +2071,23 @@ def build_attempt_context(
 
 
 def reconcile_dispatch_outbox(
-    db: sqlite3.Connection, workflow_id: str, root: Path
+    db: sqlite3.Connection,
+    workflow_id: str,
+    root: Path,
+    *,
+    fence: SchedulerFence | None = None,
 ) -> None:
-    """Recover every nonterminal attempt without duplicating an ambiguous launch."""
+    """Recover durable intents; a `launching` intent is ambiguous and terminal."""
+    if fence is None:
+        fence = acquire_scheduler_lease(db, workflow_id)
+        if fence is None:
+            return
+        try:
+            reconcile_dispatch_outbox(db, workflow_id, root, fence=fence)
+        finally:
+            release_scheduler_lease(db, workflow_id, fence)
+        return
+    require_scheduler_fence(db, workflow_id, fence)
     items = db.execute(
         "SELECT a.*, o.state AS outbox_state, t.prompt, t.cwd, t.access, "
         "m.worktree_path FROM attempts a "
@@ -2028,6 +2101,35 @@ def reconcile_dispatch_outbox(
     workflow = workflow_row(db, workflow_id)
     for item in items:
         outcome = "lost"
+        # External delivery may have happened after the durable claim.  Neither a
+        # successor nor this recovery pass may guess otherwise and relaunch it.
+        if item["outbox_state"] == "launching":
+            error = "ambiguous dispatch launch claim; fail closed"
+            db.execute(
+                "UPDATE dispatch_outbox SET state='lost',updated_at=?,error=? WHERE attempt_id=? AND state='launching'",
+                (now(), error, item["id"]),
+            )
+            db.execute(
+                "UPDATE attempts SET state='lost',finished_at=?,error=? WHERE id=?",
+                (now(), error, item["id"]),
+            )
+            db.execute(
+                "UPDATE tasks SET state='failed',phase=NULL,updated_at=? WHERE workflow_id=? AND id=?",
+                (now(), workflow_id, item["task_id"]),
+            )
+            db.execute(
+                "DELETE FROM resource_leases WHERE workflow_id=? AND attempt_id=?",
+                (workflow_id, item["id"]),
+            )
+            event(
+                db,
+                workflow_id,
+                "dispatch.failed",
+                task_id=item["task_id"],
+                attempt_id=item["id"],
+                detail={"outcome": "lost", "reason": error},
+            )
+            continue
         cancellation = db.execute(
             "SELECT state FROM attempt_cancellations WHERE attempt_id=?", (item["id"],)
         ).fetchone()
@@ -2083,6 +2185,20 @@ def reconcile_dispatch_outbox(
                 and not target
                 and cancellation is None
             ):
+                # Commit this claim before crossing the tmux/Pi boundary.  A crash
+                # after it is deliberately represented as an ambiguous launch.
+                claimed = db.execute(
+                    "UPDATE dispatch_outbox SET state='launching',updated_at=? WHERE attempt_id=? AND state='pending' AND EXISTS (SELECT 1 FROM scheduler_leases WHERE workflow_id=? AND owner=? AND generation=? AND expires_at>?)",
+                    (now(), item["id"], workflow_id, fence[0], fence[1], time.time()),
+                ).rowcount
+                if not claimed:
+                    continue
+                db.execute(
+                    "INSERT OR REPLACE INTO dispatch_launch_claims VALUES(?,?,?,?)",
+                    (item["id"], fence[0], fence[1], now()),
+                )
+                # SQLite protects only this durable claim, never the external call.
+                db.commit()
                 try:
                     launch_worker(
                         task_id=item["task_id"],
@@ -2106,9 +2222,20 @@ def reconcile_dispatch_outbox(
                         "UPDATE attempts SET tmux_pane=? WHERE id=?",
                         (manifest["tmux"]["paneId"], item["id"]),
                     )
+                    require_scheduler_fence(db, workflow_id, fence)
                     db.execute(
-                        "UPDATE dispatch_outbox SET state='launched',updated_at=? WHERE attempt_id=?",
-                        (now(), item["id"]),
+                        "UPDATE dispatch_outbox SET state='launched',updated_at=? WHERE attempt_id=? AND state='launching' AND EXISTS (SELECT 1 FROM dispatch_launch_claims WHERE attempt_id=? AND owner=? AND generation=?) AND EXISTS (SELECT 1 FROM scheduler_leases WHERE workflow_id=? AND owner=? AND generation=? AND expires_at>?)",
+                        (
+                            now(),
+                            item["id"],
+                            item["id"],
+                            fence[0],
+                            fence[1],
+                            workflow_id,
+                            fence[0],
+                            fence[1],
+                            time.time(),
+                        ),
                     )
                     event(
                         db,
@@ -2122,6 +2249,9 @@ def reconcile_dispatch_outbox(
                         },
                     )
                     continue
+                except RuntimeError:
+                    # A successor owns the lease now; it will fail-close `launching`.
+                    return
                 except AttemptContextError as context_error:
                     outcome = "blocked"
                     error = str(context_error)
@@ -2130,6 +2260,7 @@ def reconcile_dispatch_outbox(
                     error = str(launch_error)
             else:
                 error = "worker manifest and tmux target are missing"
+        require_scheduler_fence(db, workflow_id, fence)
         if cancellation:
             # A vanished target after a cancellation request is externally ambiguous;
             # fail closed as lost rather than relaunching or claiming cancellation.
@@ -2167,11 +2298,29 @@ def reconcile_dispatch_outbox(
         )
 
 
-def reconcile_workflow(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
-    """Run the idempotent recovery pass without scheduling new work."""
+def reconcile_workflow(
+    db: sqlite3.Connection,
+    workflow_id: str,
+    root: Path,
+    *,
+    fence: SchedulerFence | None = None,
+) -> None:
+    """Recover only while holding the same scheduler fence used for delivery."""
+    if fence is None:
+        fence = acquire_scheduler_lease(db, workflow_id)
+        if fence is None:
+            return
+        try:
+            reconcile_workflow(db, workflow_id, root, fence=fence)
+        finally:
+            release_scheduler_lease(db, workflow_id, fence)
+        return
     with db:
+        require_scheduler_fence(db, workflow_id, fence)
         refresh(db, workflow_id)
-        reconcile_dispatch_outbox(db, workflow_id, root)
+    reconcile_dispatch_outbox(db, workflow_id, root, fence=fence)
+    with db:
+        require_scheduler_fence(db, workflow_id, fence)
         refresh(db, workflow_id)
 
 
@@ -2181,9 +2330,9 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
     if owner is None:
         return
     try:
+        reconcile_workflow(db, workflow_id, root, fence=owner)
         with db:
-            workflow = workflow_row(db, workflow_id)
-            reconcile_workflow(db, workflow_id, root)
+            require_scheduler_fence(db, workflow_id, owner)
             workflow = workflow_row(db, workflow_id)
             findings = revision_findings(db, workflow_id)
             if workflow["state"] == "refining" or any(
@@ -2338,6 +2487,7 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
                         detail={"reason": "write task requires a worktree:* resource"},
                     )
                     continue
+                require_scheduler_fence(db, workflow_id, owner)
                 attempt_id = uuid.uuid4().hex
                 run_dir = (
                     root
@@ -2424,6 +2574,7 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
                         "INSERT INTO resource_leases VALUES(?,?,?,?)",
                         (workflow_id, resource, attempt_id, now()),
                     )
+                require_scheduler_fence(db, workflow_id, owner)
                 db.execute(
                     "INSERT INTO dispatch_outbox VALUES(?,?,?,?,?,?,?,NULL)",
                     (
@@ -2446,8 +2597,9 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
                 )
                 slots -= 1
         # tmux is external: its outcome is reconciled from the durable intent.
+        reconcile_workflow(db, workflow_id, root, fence=owner)
         with db:
-            reconcile_workflow(db, workflow_id, root)
+            require_scheduler_fence(db, workflow_id, owner)
             remaining = db.execute(
                 "SELECT COUNT(*) FROM tasks WHERE workflow_id=? AND state NOT IN ('done','failed','blocked','cancelled')",
                 (workflow_id,),
