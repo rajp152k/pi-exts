@@ -12,6 +12,7 @@ Personal Pi extensions, organized under the `rp152kpi:<name>` namespace.
 - [Package installation and maintenance](docs/package-guide.md)
 - [Integrations and skills](docs/integrations.md)
 - [Task-dispatch workflows](docs/task-dispatch.md)
+- [Capability truth table](docs/capabilities.md)
 
 ## Capabilities
 

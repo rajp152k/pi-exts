@@ -1,7 +1,7 @@
 ---
 name: pi-task-dispatch
 description: Dispatch, monitor, cancel, and collect bounded one-shot Pi task workers in tmux. Use for parallel read-only scouting, reviews, diagnostics, or isolated worktree tasks that need a durable handoff for a primary Pi agent to consolidate.
-compatibility: Requires Python 3, tmux, Pi on PATH, Textual (`pip install -r skills/pi-task-dispatch/requirements.txt`), and an explicit target tmux session. Workers use the configured Pi credentials and resources.
+compatibility: Requires uv, tmux, and Pi on PATH, plus an explicit target tmux session. uv provisions the locked Python and Textual environment; workers use the configured Pi credentials and resources.
 ---
 
 # Pi task dispatch
@@ -11,7 +11,7 @@ Use this skill for independent task streams and durable multi-task workflows. A 
 Define the command from the installed skill directory (or use its absolute path while developing):
 
 ```bash
-task-dispatch() { python3 "$PI_EXTS_ROOT/skills/pi-task-dispatch/scripts/task-dispatch.py" "$@"; }
+task-dispatch() { "$PI_EXTS_ROOT/skills/pi-task-dispatch/scripts/task-dispatch" "$@"; }
 ```
 
 Set `PI_EXTS_ROOT` to the installed checkout when necessary:

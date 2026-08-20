@@ -31,7 +31,7 @@ just install tangent
 just all
 ```
 
-`just install NAME` runs `pi install git:github.com/rajp152k/pi-exts`, then configures the selected bundle in `~/.pi/agent/settings.json`. `just all` enables the complete package. The `tmux` bundle's workflow board also needs Textual: `python3 -m pip install -r ~/.pi/agent/git/github.com/rajp152k/pi-exts/skills/pi-task-dispatch/requirements.txt`. Restart Pi after changing loaded resources.
+`just install NAME` runs `pi install git:github.com/rajp152k/pi-exts`, then configures the selected bundle in `~/.pi/agent/settings.json`. `just all` enables the complete package. The `tmux` bundle's workflow board requires `uv` on `PATH`; its checked-in lock provisions Textual and a managed Python without using system Python. Restart Pi after changing loaded resources.
 
 ## Local development
 

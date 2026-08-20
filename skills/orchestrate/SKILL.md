@@ -126,7 +126,7 @@ For a new or experimental workflow, isolate its database and artifacts:
 ```bash
 DB=/tmp/<workflow-id>.db
 ROOT=/tmp/<workflow-id>-runs
-DISPATCH="python3 $PI_EXTS_ROOT/skills/pi-task-dispatch/scripts/task-dispatch.py \
+DISPATCH="$PI_EXTS_ROOT/skills/pi-task-dispatch/scripts/task-dispatch \
   --database $DB --root $ROOT"
 
 $DISPATCH workflow start <workflow-id>

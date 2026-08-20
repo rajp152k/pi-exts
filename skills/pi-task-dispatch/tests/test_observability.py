@@ -210,6 +210,46 @@ class ObservabilityTests(unittest.TestCase):
         self.assertEqual(["new-window"], [c[0] for c in calls])
         self.assertIn("eph-pi-exts:", calls[0])
 
+    def test_uv_script_command_uses_locked_managed_python(self) -> None:
+        with patch.object(self.d.shutil, "which", return_value="/usr/local/bin/uv"):
+            command = self.d.uv_script_command("worker", "--run-dir", "/tmp/run")
+        self.assertEqual(
+            ["uv", "run", "--managed-python", "--locked", "--script"],
+            command[:5],
+        )
+        self.assertEqual("task-dispatch.py", Path(command[5]).name)
+        self.assertEqual(["worker", "--run-dir", "/tmp/run"], command[6:])
+
+    def test_watch_reexec_uses_uv_script_command(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_tmux(arguments: list[str], **_: Any) -> Any:
+            calls.append(arguments)
+            return type("Result", (), {"stdout": "@7,%9\\n"})()
+
+        args = type(
+            "Args",
+            (),
+            {
+                "database": str(self.root / "workflow.db"),
+                "root": str(self.root),
+                "id": "fixture",
+                "in_tmux": False,
+                "drive": True,
+            },
+        )()
+        with (
+            patch.object(self.d.shutil, "which", return_value="/usr/local/bin/uv"),
+            patch.object(self.d, "run_tmux", side_effect=fake_tmux),
+            redirect_stdout(io.StringIO()),
+        ):
+            self.d.command_workflow_watch(args)
+        command = calls[0]
+        self.assertIn("uv", command)
+        self.assertIn("--managed-python", command)
+        self.assertIn("--locked", command)
+        self.assertIn("--in-tmux", command)
+
     def test_read_only_rpc_workers_receive_shell_access(self) -> None:
         command = self.d.rpc_command({"id": "reader", "access": "read-only"})
         self.assertEqual(

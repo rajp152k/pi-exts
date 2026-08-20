@@ -25,6 +25,11 @@ update-all:
     pi update --extension "{{repo_source}}"
     python3 scripts/configure-package.py "{{repo_source}}"
 
+# Run offline metadata and task-dispatch checks in a uv-managed Python.
+check:
+    uv run --managed-python python scripts/check-capabilities.py
+    uv run --managed-python python -m unittest discover -s skills/pi-task-dispatch/tests
+
 # Start Firefox with Marionette and WebDriver BiDi enabled.
 firefox-launch:
     integrations/firefox/scripts/launch-firefox-agent
