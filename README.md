@@ -15,15 +15,15 @@ Personal Pi extensions, organized under the `rp152kpi:<name>` namespace.
 
 ## Capabilities
 
-- [`rp152kpi:notify`](extensions/rp152kpi:notify): shows a top-right tmux popup when Pi is ready for the next prompt.
-- [`rp152kpi:firefox`](extensions/rp152kpi:firefox): provides status and lifecycle controls for the live Firefox browser-agent integration.
+- [`rp152kpi:notify`](extensions/rp152kpi:notify): shows a dismissible top-right tmux popup when Pi settles.
+- [`rp152kpi:firefox`](extensions/rp152kpi:firefox): provides on, off, status, and restart controls for its Firefox MCP connection.
 - [`tmux-control`](skills/tmux-control): directs Pi to safely inspect and control local tmux sessions through the tmux CLI.
 - [`pi-task-dispatch`](skills/pi-task-dispatch): dispatches and monitors tmux-backed Pi workers, with SQLite-persisted dependency workflows, event observability, and a live board/Gantt watch.
 - [`orchestrate`](skills/orchestrate): turns a goal and discovery todo corpus into a reviewed, safely parallel task-dispatch graph and observable execution.
 - [`modelling`](skills/modelling): turns a context into a bounded, decision-relevant model specification with explicit uncertainty and validation.
 - [`science`](skills/science): applies scientific-method thinking to critically question claims, learning, and software.
-- [`rp152kpi:traces`](extensions/rp152kpi:traces): searches local trace indexes and loads bounded trace views through the `traces` CLI.
-- [`rp152kpi:tangent`](extensions/rp152kpi:tangent): opens an isolated Pi tangent in a new tmux window, seeded with the two latest assistant responses and a query.
+- [`rp152kpi:traces`](extensions/rp152kpi:traces): lists or searches local traces and loads remote trace views through the `traces` CLI.
+- [`rp152kpi:tangent`](extensions/rp152kpi:tangent): opens an isolated Pi tangent in tmux and can catch up from a tangent window.
 
 ## Install
 

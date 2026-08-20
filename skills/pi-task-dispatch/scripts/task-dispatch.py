@@ -3161,7 +3161,7 @@ def run_textual_watch(
             self.hidden_terminal: set[str] = set()
             self.filters = {"state": "all", "resource": "all", "agent": "all"}
             self.projection: dict[str, Any] = {}
-            self.visible: list[str] = []
+            self.visible_task_ids: list[str] = []
 
         def compose(self) -> Any:
             yield Static(id="watch-header")
@@ -3182,16 +3182,18 @@ def run_textual_watch(
                 self.last_tick = time.monotonic()
             self.projection = workflow_projection(db, workflow_id)
             width = max(12, self.size.width)
-            board, self.visible = watch_board_lines(
+            board, self.visible_task_ids = watch_board_lines(
                 self.projection,
                 width,
                 self.selected_id,
                 self.filters,
                 self.hidden_terminal,
             )
-            if self.selected_id not in self.visible:
-                self.selected_id = self.visible[0] if self.visible else None
-                board, self.visible = watch_board_lines(
+            if self.selected_id not in self.visible_task_ids:
+                self.selected_id = (
+                    self.visible_task_ids[0] if self.visible_task_ids else None
+                )
+                board, self.visible_task_ids = watch_board_lines(
                     self.projection,
                     width,
                     self.selected_id,
@@ -3239,15 +3241,15 @@ def run_textual_watch(
             self.refresh_projection()
 
         def select_task(self, direction: int) -> None:
-            if not self.visible:
+            if not self.visible_task_ids:
                 return
-            if self.selected_id in self.visible:
-                index = (self.visible.index(self.selected_id) + direction) % len(
-                    self.visible
-                )
-                self.selected_id = self.visible[index]
+            if self.selected_id in self.visible_task_ids:
+                index = (
+                    self.visible_task_ids.index(self.selected_id) + direction
+                ) % len(self.visible_task_ids)
+                self.selected_id = self.visible_task_ids[index]
             else:
-                self.selected_id = self.visible[0]
+                self.selected_id = self.visible_task_ids[0]
             self.refresh_projection()
 
         def action_next_task(self) -> None:

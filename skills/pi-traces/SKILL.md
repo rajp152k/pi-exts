@@ -17,7 +17,7 @@ traces_show({ reference: "https://traces.com/<trace-id>" })
 traces_show({ reference: "<trace-id>", includeTools: true })
 ```
 
-Use `includeTools: true` only when tool calls/results are needed as implementation evidence. The tool returns a bounded view; do not infer omitted details from truncation.
+Use `includeTools: true` only when tool calls/results are needed as implementation evidence. `traces_show` returns only the first 60 matching events (each capped at 6,000 characters), then Pi may truncate output further; do not infer omitted details.
 
 ## Local/recent trace requests
 
@@ -25,7 +25,7 @@ When the user refers to a local, recent, previous, current, or last trace withou
 
 1. Call `traces_search` first, with a focused query when one is available.
 2. Identify the relevant trace ID from its result.
-3. Call `traces_show` only when the full conversation or implementation evidence is needed.
+3. Call `traces_show` only when its bounded first-page view can provide the needed conversation details or implementation evidence.
 
 ```text
 traces_search({ query: "tmux task dispatch", limit: 10 })

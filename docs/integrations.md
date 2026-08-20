@@ -4,16 +4,22 @@ Install bundles using the [package guide](package-guide.md). Restart Pi after in
 
 ## Notify
 
-`rp152kpi:notify` displays a top-right tmux popup when Pi settles and is ready for input. It requires tmux 3.2 or newer and Pi running in TUI mode from a tmux pane. From Pi, run `/notify-test` to test it; failed automatic popups do not interrupt a completed run.
+`rp152kpi:notify` displays a top-right tmux popup when Pi settles and is ready for input. The popup remains until a key is pressed. It requires tmux 3.2 or newer and Pi running in TUI mode from a tmux pane. From Pi, run `/notify-test` to test it; failed automatic popups do not interrupt a completed run. See its [extension README](../extensions/rp152kpi:notify/README.md).
 
 ## Traces
 
-`rp152kpi:traces` exposes `traces_search` and `traces_show` to Pi. The `traces` CLI must be on `PATH` and configured/authenticated.
+`rp152kpi:traces` exposes `traces_search` and `traces_show` to Pi. The `traces` CLI must be on `PATH` and configured for the traces to inspect.
 
-- For a URL or trace ID, use `traces_show` directly.
-- For a local, recent, or previous trace, search first with `traces_search` and inspect the returned ID.
+- `traces_search` lists recent local traces when called without a query, or searches locally indexed trace events.
+- `traces_show` accepts a traces.com URL or trace ID and returns the first 60 matching events, fetching remotely when needed.
 - Successful CLI stdout is head-truncated at Pi's standard 2,000-line/50KB limit; a short notice is appended when material is omitted. Do not infer omitted material from truncation.
-- The extension reads traces; it does not upload or modify them.
+- See its [extension README](../extensions/rp152kpi:traces/README.md).
+
+## Tangent
+
+`rp152kpi:tangent` adds `/tangent <query>`, which starts an isolated Pi process in a new tmux window with the current working directory, model, thinking level, query, and up to two recent visible assistant text responses. Outside tmux, it starts a detached `tangent-…` session and reports the attach command.
+
+`/catchup <window|session.window> ; optional instructions` sends the latest recorded assistant response from that Pi pane to the current session; if none is recorded, it uses a capture of the pane instead. See its [extension README](../extensions/rp152kpi:tangent/README.md).
 
 ## tmux control
 
@@ -33,7 +39,7 @@ The `modelling` skill turns a system, claim, or decision into a bounded model sp
 
 ## Firefox
 
-The Firefox bundle combines a thin Pi extension with `firefoxctl` and the `firefox-browser` skill. It is opt-in: Pi starts with Firefox off.
+The Firefox bundle combines a thin Pi extension with `firefoxctl` and the `firefox-browser` skill. It is opt-in: Pi starts with a `Firefox: off` status indicator.
 
 ### Prerequisites and startup
 
@@ -45,7 +51,7 @@ just firefox-doctor
 
 Firefox must be fully quit before launch because the launcher starts the normal profile with Marionette and remote debugging. Node 24+ is required by the integration.
 
-From Pi, use `/firefox-on` to connect, `/firefox-status` to inspect without starting, `/firefox-off` to disconnect, and `/firefox-restart` to restart its persistent transport.
+From Pi, use `/firefox-on` to check and connect, `/firefox-status` to inspect without starting, `/firefox-off` to stop the MCP connection without closing Firefox, and `/firefox-restart` to restart the persistent MCP connection. See its [extension README](../extensions/rp152kpi:firefox/README.md).
 
 ### Safe browser loop
 

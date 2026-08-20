@@ -2,7 +2,7 @@
 
 Shows a top-right tmux popup when Pi has fully settled and is ready for the next prompt. The popup stays open until you press any key.
 
-The popup identifies the current tmux session and window as `session:index.window`.
+The popup identifies the current tmux session, window index, and window name as `session:index.window-name`.
 
 ## Requirements
 
@@ -21,7 +21,7 @@ This installs the package with Pi and selects `rp152kpi:notify`. Named bundle se
 
 ## Test
 
-Run this from Pi to send a notification immediately. Outside TUI mode or a tmux pane, it does nothing; failed automatic popups do not interrupt a completed run:
+Run this from Pi to send a notification immediately. Outside TUI mode it does nothing; in TUI mode outside tmux it shows a requirement warning. Failed automatic popups do not interrupt a completed run:
 
 ```text
 /notify-test

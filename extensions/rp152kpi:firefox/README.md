@@ -8,7 +8,7 @@ It contributes:
 - `/firefox-off` to stop MCPorter without closing Firefox
 - `/firefox-status` to inspect status without starting MCPorter
 - `/firefox-restart` to restart MCPorter's persistent Firefox transport
-- a footer indicator that begins as `Firefox: off`
+- a Pi status indicator that begins as `Firefox: off`
 
 It performs no Firefox or MCPorter work during Pi startup.
 
@@ -18,7 +18,7 @@ Install the complete bundle from the repository root:
 just install firefox
 ```
 
-Start automation-enabled Firefox before opening Pi:
+Start automation-enabled Firefox before using `/firefox-on`:
 
 ```bash
 just firefox-launch

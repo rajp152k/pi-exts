@@ -5,7 +5,7 @@
 ## Start here
 
 - [Package guide](package-guide.md) — installation, bundles, local development, and maintenance.
-- [Integration guide](integrations.md) — notify, traces, tmux controls, task dispatch, and Firefox.
+- [Integration guide](integrations.md) — notify, traces, tangent, tmux controls, task dispatch, and Firefox.
 - [Task-dispatch workflow guide](task-dispatch.md) — durable, observable Pi-worker workflows.
 
 ## Source references
@@ -13,6 +13,10 @@
 - Root [README](../README.md) provides the short package overview.
 - `resources.json` is the authoritative bundle manifest.
 - Individual operational references remain beside their code:
+  - [`extensions/rp152kpi:firefox/README.md`](../extensions/rp152kpi:firefox/README.md)
+  - [`extensions/rp152kpi:notify/README.md`](../extensions/rp152kpi:notify/README.md)
+  - [`extensions/rp152kpi:tangent/README.md`](../extensions/rp152kpi:tangent/README.md)
+  - [`extensions/rp152kpi:traces/README.md`](../extensions/rp152kpi:traces/README.md)
   - [`skills/tmux-control/SKILL.md`](../skills/tmux-control/SKILL.md)
   - [`skills/pi-task-dispatch/SKILL.md`](../skills/pi-task-dispatch/SKILL.md)
   - [`skills/pi-traces/SKILL.md`](../skills/pi-traces/SKILL.md)

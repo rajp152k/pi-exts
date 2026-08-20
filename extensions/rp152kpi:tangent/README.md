@@ -9,7 +9,7 @@ Adds `/tangent <query>` for an isolated Pi tangent and `/catchup` to bring its f
 - Inherits the current Pi model and thinking level.
 - When Pi is not running inside tmux, starts a detached `tangent-…` tmux session and prints the command needed to attach to it.
 - Does not send a model request or add context to the originating Pi session.
-- Persists each tmux Pi pane's latest finalized assistant response locally, so `/catchup 2 ; update docs` adds only that response to the current session. Use `/catchup session.2` for an explicit session; non-Pi panes fall back to their tmux capture.
+- Persists each tmux Pi pane's latest finalized assistant response locally, so `/catchup 2 ; update docs` sends only that response to the current session. Use `/catchup session.2` for an explicit session; non-Pi panes fall back to their last 2,000 captured pane lines.
 
 The seed is written to a mode-`0600` temporary file. The tangent process removes it when it exits; a launch failure removes it immediately.
 
@@ -33,6 +33,7 @@ Restart Pi after installation.
 
 ```text
 /tangent Investigate why the last proposed approach may fail.
+/catchup 2 ; summarize the findings
 ```
 
 When invoked outside tmux, attach to the reported detached session:
