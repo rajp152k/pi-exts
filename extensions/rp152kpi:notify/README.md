@@ -11,7 +11,7 @@ The popup identifies the current tmux session, window index, and window name as 
 
 ## Install
 
-From a clone of [`rajp152k/pi-exts`](https://github.com/rajp152k/pi-exts):
+From the repository root:
 
 ```bash
 just install notify
@@ -21,7 +21,7 @@ This installs the package with Pi and selects `rp152kpi:notify`. Named bundle se
 
 ## Test
 
-Run this from Pi to send a notification immediately. Outside TUI mode it does nothing; in TUI mode outside tmux it shows a requirement warning. Failed automatic popups do not interrupt a completed run:
+Run this from Pi to send a notification immediately. Outside TUI mode it does nothing; in TUI mode outside tmux it shows a requirement warning. Automatic notifications are silently skipped outside TUI mode or when `TMUX`/`TMUX_PANE` is unavailable. Failed automatic popups do not interrupt a completed run:
 
 ```text
 /notify-test

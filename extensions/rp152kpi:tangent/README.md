@@ -1,6 +1,6 @@
 # rp152kpi:tangent
 
-Adds `/tangent <query>` for an isolated Pi tangent and `/catchup` to bring its final findings back.
+Adds `/tangent <query>` for an isolated Pi tangent and `/catchup` to bring its latest recorded findings back.
 
 ## Behavior
 
@@ -9,7 +9,7 @@ Adds `/tangent <query>` for an isolated Pi tangent and `/catchup` to bring its f
 - Inherits the current Pi model and thinking level.
 - When Pi is not running inside tmux, starts a detached `tangent-…` tmux session and prints the command needed to attach to it.
 - Does not send a model request or add context to the originating Pi session.
-- Persists each tmux Pi pane's latest finalized assistant response locally, so `/catchup 2 ; update docs` sends only that response to the current session. Use `/catchup session.2` for an explicit session; non-Pi panes fall back to their last 2,000 captured pane lines.
+- Persists each tmux Pi pane's latest finalized assistant response locally, so `/catchup 2 ; update docs` sends only that response to the current session. `/catchup <window>` requires the receiving Pi to run inside tmux; otherwise use `/catchup session.2`. When no saved Pi response is available—including for non-Pi panes—`/catchup` falls back to the last 2,000 captured pane lines.
 
 The seed is written to a mode-`0600` temporary file. The tangent process removes it when it exits; a launch failure removes it immediately.
 
@@ -21,7 +21,7 @@ The seed is written to a mode-`0600` temporary file. The tangent process removes
 
 ## Install
 
-From a clone of [`rajp152k/pi-exts`](https://github.com/rajp152k/pi-exts):
+From the repository root:
 
 ```bash
 just install tangent

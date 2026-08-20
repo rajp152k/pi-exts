@@ -12,14 +12,15 @@ It contributes:
 
 It performs no Firefox or MCPorter work during Pi startup.
 
-Install the complete bundle from the repository root:
+Install the complete bundle from the repository root. It requires Node 24+ and MCPorter (`npm install --global mcporter@0.12.4`):
 
 ```bash
 just install firefox
 ```
 
-Start automation-enabled Firefox before using `/firefox-on`:
+Start automation-enabled Firefox before using `/firefox-on`. The launcher defaults to `/Applications/Firefox.app/Contents/MacOS/firefox`; set `FIREFOX_BIN` for another Firefox executable:
 
 ```bash
 just firefox-launch
+# Or: FIREFOX_BIN=/path/to/firefox just firefox-launch
 ```
