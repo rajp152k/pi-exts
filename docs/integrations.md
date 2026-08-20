@@ -19,7 +19,7 @@ Install bundles using the [package guide](package-guide.md). Restart Pi after in
 
 `rp152kpi:tangent` adds `/tangent <query>`, which starts an isolated Pi process in a new tmux window with the current working directory, model, thinking level, query, and up to two recent visible assistant text responses. Outside tmux, it starts a detached `tangent-…` session and reports the attach command.
 
-`/catchup <window|session.window> ; optional instructions` sends the latest validated recorded assistant response from that Pi pane to the current session. If none exists, it stops rather than silently substituting scrollback. Use `/catchup <target> --capture` to explicitly send the pane's last 2,000 captured lines; Pi labels it as a bounded tmux capture. A numeric window target requires the receiving Pi to run inside tmux; otherwise use an explicit `session.window` target. See its [extension README](../extensions/rp152kpi:tangent/README.md).
+`/catchup <window|session.window|session.window.pane> ; optional instructions` sends the latest validated recorded assistant response from that Pi pane to the current session. Use an explicit pane target such as `pi-exts.0.1` when a window has multiple panes. If none exists, it stops rather than silently substituting scrollback. Use `/catchup <target> --capture` to explicitly send the selected pane's last 2,000 captured lines; Pi labels it as a bounded tmux capture. A numeric window target requires the receiving Pi to run inside tmux; otherwise use an explicit session target. See its [extension README](../extensions/rp152kpi:tangent/README.md).
 
 ## tmux control
 
