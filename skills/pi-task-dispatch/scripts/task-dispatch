@@ -1,0 +1,5 @@
+#!/bin/sh
+# Run task-dispatch in the Python environment locked beside its script.
+set -eu
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec uv run --managed-python --locked --script "$script_dir/task-dispatch.py" "$@"

@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.11,<3.15"
+# dependencies = ["textual==8.2.8"]
+# ///
 """Dispatch bounded Pi workers and orchestrate observable tmux-backed workflows."""
 
 from __future__ import annotations
@@ -45,6 +49,21 @@ def now() -> str:
 
 def fail(message: str) -> NoReturn:
     raise SystemExit(f"task-dispatch: {message}")
+
+
+def uv_script_command(*args: str) -> list[str]:
+    """Run this script in its locked, uv-managed Python environment."""
+    if not shutil.which("uv"):
+        fail("uv is required; install it from https://docs.astral.sh/uv/")
+    return [
+        "uv",
+        "run",
+        "--managed-python",
+        "--locked",
+        "--script",
+        str(Path(__file__).resolve()),
+        *args,
+    ]
 
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
@@ -189,13 +208,7 @@ def launch_worker(
         manifest["attemptContext"] = context
         manifest["provenance"] = {"injectedArtifacts": context["injectedArtifacts"]}
     write_json(run_dir / "manifest.json", manifest)
-    command = [
-        sys.executable,
-        str(Path(__file__).resolve()),
-        "worker",
-        "--run-dir",
-        str(run_dir),
-    ]
+    command = uv_script_command("worker", "--run-dir", str(run_dir))
     worker_session = session
     if workflow:
         worker_session, window_id, pane_id = launch_workflow_rpc_window(
@@ -1939,7 +1952,10 @@ def reconcile_dispatch_outbox(
                         detail={"target": target},
                     )
                 continue
-            if item["outbox_state"] == "pending" and not run_dir.exists():
+            # A pending intent without a recorded target was never launched and may
+            # be recovered once. A vanished recorded target is a lost attempt, not
+            # permission to relaunch potentially side-effecting work.
+            if item["outbox_state"] == "pending" and not run_dir.exists() and not target:
                 try:
                     launch_worker(
                         task_id=item["task_id"],
@@ -3125,8 +3141,8 @@ def run_textual_watch(
         Static = widgets_module.Static
     except ImportError:
         fail(
-            "workflow watch requires Textual; install it with "
-            "python3 -m pip install -r skills/pi-task-dispatch/requirements.txt"
+            "workflow watch requires Textual from this script's locked uv environment; "
+            "launch it with skills/pi-task-dispatch/scripts/task-dispatch"
         )
 
     class WorkflowWatchApp(App[None]):
@@ -3351,9 +3367,7 @@ def command_workflow_watch(args: argparse.Namespace) -> None:
     db = db_connect(args.database)
     workflow = workflow_row(db, args.id)
     if not args.in_tmux:
-        command = [
-            sys.executable,
-            str(Path(__file__).resolve()),
+        command = uv_script_command(
             "--database",
             args.database,
             "--root",
@@ -3362,7 +3376,7 @@ def command_workflow_watch(args: argparse.Namespace) -> None:
             "watch",
             args.id,
             "--in-tmux",
-        ]
+        )
         if args.drive:
             command.append("--drive")
         result = run_tmux(

@@ -7,6 +7,7 @@
 - [Package guide](package-guide.md) — installation, bundles, local development, and maintenance.
 - [Integration guide](integrations.md) — notify, traces, tangent, tmux controls, task dispatch, and Firefox.
 - [Task-dispatch workflow guide](task-dispatch.md) — durable, observable Pi-worker workflows.
+- [Capability truth table](capabilities.md) — generated capability state, ownership, prerequisites, and validation.
 
 ## Source references
 

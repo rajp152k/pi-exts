@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "states": ["implemented", "experimental", "planned", "deprecated"],
+  "maturities": ["personal", "supported-local", "experimental"],
+  "capabilities": [
+    {"id":"notify","state":"implemented","maturity":"personal","owner":"Pi extension","bundle":"notify","resources":["extensions/rp152kpi:notify/index.ts"],"prerequisites":["tmux"],"authority":"tmux popup is attention-only","offlineValidation":"just check","liveValidation":"manual Pi TUI session"},
+    {"id":"firefox","state":"implemented","maturity":"personal","owner":"Pi extension + CLI + skill","bundle":"firefox","resources":["extensions/rp152kpi:firefox/index.ts","skills/firefox-browser/SKILL.md"],"prerequisites":["Node 24+","MCPorter","automation-enabled Firefox"],"authority":"firefoxctl controls the external browser boundary","offlineValidation":"just check","liveValidation":"just test-firefox"},
+    {"id":"tmux-control","state":"implemented","maturity":"personal","owner":"skill","bundle":"tmux","resources":["skills/tmux-control/SKILL.md"],"prerequisites":["tmux"],"authority":"explicit tmux targets","offlineValidation":"just check","liveValidation":"manual tmux session"},
+    {"id":"task-dispatch","state":"implemented","maturity":"supported-local","owner":"skill + local Python runtime","bundle":"tmux","resources":["skills/pi-task-dispatch/SKILL.md"],"prerequisites":["uv","tmux","Pi"],"authority":"SQLite attempts and events","offlineValidation":"just check","liveValidation":"TASK_DISPATCH_SMOKE=1 skills/pi-task-dispatch/tests/smoke_real.sh"},
+    {"id":"orchestrate","state":"implemented","maturity":"personal","owner":"skill","bundle":"tmux","resources":["skills/orchestrate/SKILL.md"],"prerequisites":["task-dispatch prerequisites"],"authority":"workflow SQLite revision and approval records","offlineValidation":"just check","liveValidation":"manual reviewed workflow"},
+    {"id":"modelling","state":"implemented","maturity":"personal","owner":"skill","bundle":"modelling","resources":["skills/modelling/SKILL.md"],"prerequisites":["Pi"],"authority":"user-approved model artifact","offlineValidation":"just check","liveValidation":"manual Pi session"},
+    {"id":"science","state":"implemented","maturity":"personal","owner":"skill","bundle":"science","resources":["skills/science/SKILL.md"],"prerequisites":["Pi"],"authority":"evidence and test results","offlineValidation":"just check","liveValidation":"manual Pi session"},
+    {"id":"traces","state":"implemented","maturity":"personal","owner":"Pi extension + skill","bundle":"traces","resources":["extensions/rp152kpi:traces/index.ts","skills/pi-traces/SKILL.md"],"prerequisites":["traces CLI"],"authority":"traces CLI output","offlineValidation":"just check","liveValidation":"manual trace query"},
+    {"id":"tangent","state":"implemented","maturity":"experimental","owner":"Pi extension","bundle":"tangent","resources":["extensions/rp152kpi:tangent/index.ts"],"prerequisites":["tmux","Pi"],"authority":"recorded tangent handoff","offlineValidation":"just check","liveValidation":"manual tangent session"}
+  ]
+}

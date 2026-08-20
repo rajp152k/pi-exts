@@ -4,8 +4,8 @@
 
 ## Preconditions
 
-- Python 3, `pi`, and `tmux` are on `PATH`.
-- Install the Textual UI dependency: `python3 -m pip install -r "$PI_EXTS_ROOT/skills/pi-task-dispatch/requirements.txt"`.
+- `uv`, `pi`, and `tmux` are on `PATH`.
+- The checked-in uv script lock provisions the managed Python and Textual environment; no system Python or `pip install` is required.
 - Install the `tmux` bundle and restart Pi.
 - Discover the explicit tmux session before dispatching:
 
@@ -18,7 +18,7 @@ For development from this checkout:
 ```bash
 export PI_EXTS_ROOT=/absolute/path/to/pi-exts
 task-dispatch() {
-  python3 "$PI_EXTS_ROOT/skills/pi-task-dispatch/scripts/task-dispatch.py" "$@"
+  "$PI_EXTS_ROOT/skills/pi-task-dispatch/scripts/task-dispatch" "$@"
 }
 ```
 

@@ -7,13 +7,14 @@ set -eu
 }
 command -v pi >/dev/null
 command -v tmux >/dev/null
+command -v uv >/dev/null
 base=$(mktemp -d "${TMPDIR:-/tmp}/task-dispatch-smoke.XXXXXX")
 trap 'rm -rf "$base"' EXIT
 session="task-dispatch-smoke-$$"
 tmux new-session -d -s "$session"
 trap 'tmux kill-session -t "$session" 2>/dev/null || true; rm -rf "$base"' EXIT
-script=$(CDPATH= cd -- "$(dirname -- "$0")/../scripts" && pwd)/task-dispatch.py
-python3 "$script" --database "$base/workflow.db" --root "$base/runs" dispatch \
+script=$(CDPATH= cd -- "$(dirname -- "$0")/../scripts" && pwd)/task-dispatch
+"$script" --database "$base/workflow.db" --root "$base/runs" dispatch \
 	--id smoke --tmux-session "$session" --cwd "$base" --read-only \
 	--task 'Reply with a compact handoff; do not modify files.'
 echo "smoke worker launched; inspect the printed run directory before cleanup"
