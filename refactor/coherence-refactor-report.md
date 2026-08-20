@@ -1,6 +1,6 @@
 # Coherence refactor: findings and execution plan
 
-**Status:** Phase 0 is approved and implemented on `coherence-phase0`; it awaits integration. The first scheduler-recovery proof is also implemented and verified.
+**Status:** Phase 0 and the first scheduler-recovery proof are implemented, verified, and merged to `main`.
 
 ## Evidence-based direction
 
@@ -130,4 +130,4 @@ The initial `workflow watch` attempts returned targets `pi-exts:@284` and `pi-ex
 
 ## Next action
 
-Integrate the Phase-0 branch, then continue Phase 1 with the remaining focused runtime invariants: cancellation, heartbeat, orphan capacity, writer retry, revision pinning, worktree/session lifecycle, and artifact/export schema.
+Continue Phase 1 with cancellation semantics first: desired versus observed workflow state, durable cancellation intent/acknowledgment events, and crash-boundary recovery tests. Then address heartbeat, orphan capacity, writer retry, revision pinning, worktree/session lifecycle, and artifact/export schema.
