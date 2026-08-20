@@ -3360,7 +3360,8 @@ def run_textual_watch(
         BINDINGS = [
             ("q", "quit", "Quit"),
             ("r", "tick", "Tick"),
-            ("g", "toggle_gantt", "Gantt"),
+            ("g", "toggle_gantt", "DAG/Gantt"),
+            ("v", "cycle_view", "View"),
             ("d", "toggle_details", "Details"),
             ("j", "next_task", "Next task"),
             ("k", "previous_task", "Previous task"),
@@ -3376,7 +3377,7 @@ def run_textual_watch(
             self.last_tick = 0.0
             self.selected_id: str | None = None
             self.details = False
-            self.gantt = False
+            self.view = "timeline"
             self.hidden_terminal: set[str] = set()
             self.filters = {"state": "all", "resource": "all", "agent": "all"}
             self.projection: dict[str, Any] = {}
@@ -3419,9 +3420,24 @@ def run_textual_watch(
                     self.filters,
                     self.hidden_terminal,
                 )
-            content = (
-                watch_timeline_lines(self.projection, width) if self.gantt else board
-            )
+            if self.view == "board":
+                content = board
+            elif self.view == "dag":
+                content = watch_dag_lines(
+                    self.projection,
+                    width,
+                    self.filters,
+                    self.hidden_terminal,
+                    self.selected_id,
+                )
+            else:
+                content = watch_timeline_lines(
+                    self.projection,
+                    width,
+                    self.filters,
+                    self.hidden_terminal,
+                    self.selected_id,
+                )
             selected = next(
                 (
                     task
@@ -3432,7 +3448,7 @@ def run_textual_watch(
             )
             header = (
                 f"{workflow_id} [{self.projection['workflow']['state']}]  "
-                "↑/↓/PgUp/PgDn/Home/End scroll; j/k select"
+                f"view={self.view}; ↑/↓/PgUp/PgDn/Home/End scroll; j/k select"
             )
             status = (
                 f"filters state={self.filters['state']} resource={self.filters['resource']} "
@@ -3452,7 +3468,12 @@ def run_textual_watch(
             self.refresh_projection()
 
         def action_toggle_gantt(self) -> None:
-            self.gantt = not self.gantt
+            self.view = "dag" if self.view == "timeline" else "timeline"
+            self.refresh_projection()
+
+        def action_cycle_view(self) -> None:
+            views = ("timeline", "dag", "board")
+            self.view = views[(views.index(self.view) + 1) % len(views)]
             self.refresh_projection()
 
         def action_toggle_details(self) -> None:
@@ -3527,28 +3548,73 @@ def run_textual_watch(
     WorkflowWatchApp().run()
 
 
-def watch_timeline_lines(projection: dict[str, Any], width: int) -> list[str]:
-    """Pure proportional Gantt layout; retained as an opt-in watch view."""
-    attempts = [
-        a
+def watch_visible_tasks(
+    projection: dict[str, Any], filters: dict[str, str], hidden_terminal: set[str]
+) -> list[dict[str, Any]]:
+    """Apply the watch filters once so every view describes the same workflow slice."""
+    return [
+        task
         for task in projection["tasks"]
-        for a in task.get("attempts", [])
-        if a.get("started_at")
+        if task["id"] not in hidden_terminal
+        and (
+            filters["state"] == "all" or watch_bucket(task["state"]) == filters["state"]
+        )
+        and (
+            filters["resource"] == "all"
+            or filters["resource"] in task.get("resources", [])
+        )
+        and (filters["agent"] == "all" or filters["agent"] == task.get("agent"))
     ]
+
+
+def watch_timeline_lines(
+    projection: dict[str, Any],
+    width: int,
+    filters: dict[str, str] | None = None,
+    hidden_terminal: set[str] | None = None,
+    selected_id: str | None = None,
+) -> list[str]:
+    """Render one adaptive Gantt row per task from observed attempt timing.
+
+    This deliberately shows elapsed/recorded time, not an invented completion estimate.
+    Multiple attempts stay on one task row, making retries visible without consuming a card.
+    """
+    filters = filters or {"state": "all", "resource": "all", "agent": "all"}
+    tasks = watch_visible_tasks(projection, filters, hidden_terminal or set())
+    attempts = [
+        attempt
+        for task in tasks
+        for attempt in task.get("attempts", [])
+        if attempt.get("started_at")
+    ]
+    label_width = max(18, min(34, width // 3))
+    bar_width = max(8, width - label_width - 16)
     if not attempts:
-        return ["Gantt: no attempt timing yet."]
-    starts = [datetime.fromisoformat(a["started_at"]) for a in attempts]
+        return ["Gantt · one row per task · no observed attempt timing yet."] + [
+            f"{'>' if task['id'] == selected_id else ' '} [{task['state'].upper():11}] "
+            f"{task['id'][: label_width - 16]} · not started"
+            for task in tasks
+        ]
+
+    now_time = datetime.now(UTC)
+    starts = [datetime.fromisoformat(attempt["started_at"]) for attempt in attempts]
     ends = [
-        datetime.fromisoformat(a["finished_at"])
-        if a.get("finished_at")
-        else datetime.now(UTC)
-        for a in attempts
+        datetime.fromisoformat(attempt["finished_at"])
+        if attempt.get("finished_at")
+        else now_time
+        for attempt in attempts
     ]
     first, last = min(starts), max(ends)
     span = max(1, (last - first).total_seconds())
-    bar = max(8, width - 24)
-    lines = ["Gantt (proportional attempt history; durable data is unchanged)"]
-    for task in projection["tasks"]:
+    lines = [
+        f"Gantt · observed attempt time {first.strftime('%H:%M:%S')} → {last.strftime('%H:%M:%S')} "
+        f"· {span:.0f}s · one row per task"
+    ]
+    for task in tasks:
+        label = f"{'>' if task['id'] == selected_id else ' '} [{task['state'].upper():11}] {task['id']}"
+        label = label[:label_width].ljust(label_width)
+        cells = ["·"] * bar_width
+        durations: list[str] = []
         for attempt in task.get("attempts", []):
             if not attempt.get("started_at"):
                 continue
@@ -3556,13 +3622,76 @@ def watch_timeline_lines(projection: dict[str, Any], width: int) -> list[str]:
             end = (
                 datetime.fromisoformat(attempt["finished_at"])
                 if attempt.get("finished_at")
-                else datetime.now(UTC)
+                else now_time
             )
-            left = round((start - first).total_seconds() / span * (bar - 1))
-            length = max(1, round((end - start).total_seconds() / span * bar))
-            lines.append(
-                f"{task['id'][:20]:20} " + " " * left + "#" * min(length, bar - left)
+            left = min(
+                bar_width - 1,
+                round((start - first).total_seconds() / span * (bar_width - 1)),
             )
+            length = max(1, round((end - start).total_seconds() / span * bar_width))
+            marker = "=" if attempt.get("finished_at") else "#"
+            for index in range(left, min(bar_width, left + length)):
+                cells[index] = marker
+            durations.append(
+                watch_elapsed(attempt.get("started_at"), attempt.get("finished_at"))
+            )
+        suffix = ",".join(durations) if durations else "not started"
+        lines.append(f"{label} |{''.join(cells)}| {suffix}")
+    return lines
+
+
+def watch_dag_lines(
+    projection: dict[str, Any],
+    width: int,
+    filters: dict[str, str],
+    hidden_terminal: set[str],
+    selected_id: str | None,
+) -> list[str]:
+    """Render the dependency DAG as explicit, compact dependency → dependent edges."""
+    tasks = watch_visible_tasks(projection, filters, hidden_terminal)
+    visible_ids = {task["id"] for task in tasks}
+    task_by_id = {task["id"]: task for task in tasks}
+    edges = [
+        (parent, task["id"])
+        for task in tasks
+        for parent in task.get("dependsOn", [])
+        if parent in visible_ids
+    ]
+    lines = [f"DAG · {len(tasks)} tasks · {len(edges)} visible dependency edges"]
+    if not edges:
+        return lines + [
+            f"{'>' if task['id'] == selected_id else ' '} [{task['state'].upper()}] {task['id']}"
+            for task in tasks
+        ]
+    grouped: dict[str, list[str]] = {}
+    for parent, child in edges:
+        grouped.setdefault(parent, []).append(child)
+    for parent, children in grouped.items():
+        parent_tag = task_by_id[parent]["state"].upper()
+        child_tags = ", ".join(
+            f"{child} [{task_by_id[child]['state'].upper()}]" for child in children
+        )
+        selected = ">" if parent == selected_id or selected_id in children else " "
+        lines.extend(
+            textwrap.wrap(
+                f"{selected} {parent} [{parent_tag}] ──→ {child_tags}",
+                width=max(12, width),
+                subsequent_indent="    ",
+                break_long_words=True,
+            )
+        )
+    disconnected = [
+        task
+        for task in tasks
+        if not task.get("dependsOn") and task["id"] not in grouped
+    ]
+    if disconnected:
+        lines.append(
+            "Independent: "
+            + ", ".join(
+                f"{task['id']} [{task['state'].upper()}]" for task in disconnected
+            )
+        )
     return lines
 
 
@@ -3761,7 +3890,7 @@ def build_parser() -> argparse.ArgumentParser:
     cancel.add_argument("task", nargs="?")
     cancel.set_defaults(handler=command_workflow_cancel)
     watch = wf.add_parser(
-        "watch", help="open a live Kanban/Gantt board in a tmux window"
+        "watch", help="open a live Gantt/DAG workflow view in a tmux window"
     )
     watch.add_argument("id")
     watch.add_argument("--drive", action="store_true", default=True)

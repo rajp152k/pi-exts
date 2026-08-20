@@ -176,7 +176,19 @@ class ObservabilityTests(unittest.TestCase):
             set(),
         )
         self.assertEqual(["reader-a"], ready)
-        self.assertIn("Gantt", self.d.watch_timeline_lines(projection, 80)[0])
+        timeline = self.d.watch_timeline_lines(projection, 80, selected_id="reader-a")
+        self.assertIn("Gantt", timeline[0])
+        self.assertEqual(1, sum("reader-a" in line for line in timeline))
+        self.assertIn("[FAILED", "\n".join(timeline))
+        dag = self.d.watch_dag_lines(
+            projection,
+            80,
+            {"state": "all", "resource": "all", "agent": "all"},
+            set(),
+            "join",
+        )
+        self.assertIn("DAG", dag[0])
+        self.assertIn("reader-a [FAILED] ──→ join [QUEUED]", "\n".join(dag))
 
     def test_workflow_workers_use_derived_session_and_one_window_per_attempt(
         self,
@@ -212,13 +224,14 @@ class ObservabilityTests(unittest.TestCase):
 
     def test_uv_script_command_uses_locked_managed_python(self) -> None:
         with patch.object(self.d.shutil, "which", return_value="/usr/local/bin/uv"):
-            command = self.d.uv_script_command("worker", "--run-dir", "/tmp/run")
+            run_dir = str(self.root / "run")
+        command = self.d.uv_script_command("worker", "--run-dir", run_dir)
         self.assertEqual(
             ["uv", "run", "--managed-python", "--locked", "--script"],
             command[:5],
         )
         self.assertEqual("task-dispatch.py", Path(command[5]).name)
-        self.assertEqual(["worker", "--run-dir", "/tmp/run"], command[6:])
+        self.assertEqual(["worker", "--run-dir", run_dir], command[6:])
 
     def test_watch_reexec_uses_uv_script_command(self) -> None:
         calls: list[list[str]] = []
