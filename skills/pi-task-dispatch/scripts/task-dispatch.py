@@ -2094,7 +2094,7 @@ def reconcile_dispatch_outbox(
         "LEFT JOIN dispatch_outbox o ON o.attempt_id=a.id "
         "LEFT JOIN managed_worktrees m ON m.attempt_id=a.id "
         "JOIN tasks t ON t.workflow_id=a.workflow_id AND t.id=a.task_id "
-        "WHERE a.workflow_id=? AND a.state='in_progress' "
+        "WHERE a.workflow_id=? AND a.state IN ('in_progress','orphaned') "
         "ORDER BY a.started_at",
         (workflow_id,),
     ).fetchall()
@@ -2267,12 +2267,31 @@ def reconcile_dispatch_outbox(
             observe_cancellation(
                 db, workflow_id, item, {"state": "lost", "error": error}
             )
+        # The attempt transition is the durable recovery decision.  Make it
+        # conditional on the current fence, then project every related record
+        # from that one successful decision so a stale scheduler cannot emit a
+        # duplicate loss event or release another owner's lease.
+        recovered = db.execute(
+            "UPDATE attempts SET state=?,finished_at=?,error=? WHERE id=? "
+            "AND state IN ('in_progress','orphaned') AND EXISTS "
+            "(SELECT 1 FROM scheduler_leases WHERE workflow_id=? AND owner=? "
+            "AND generation=? AND expires_at>?)",
+            (
+                outcome,
+                now(),
+                error,
+                item["id"],
+                workflow_id,
+                fence[0],
+                fence[1],
+                time.time(),
+            ),
+        ).rowcount
+        if not recovered:
+            require_scheduler_fence(db, workflow_id, fence)
+            continue
         db.execute(
             "UPDATE dispatch_outbox SET state=?,updated_at=?,error=? WHERE attempt_id=?",
-            (outcome, now(), error, item["id"]),
-        )
-        db.execute(
-            "UPDATE attempts SET state=?,finished_at=?,error=? WHERE id=?",
             (outcome, now(), error, item["id"]),
         )
         db.execute(

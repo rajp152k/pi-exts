@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-
 SCRIPT = Path(__file__).parents[1] / "scripts" / "task-dispatch.py"
 
 
@@ -40,7 +39,10 @@ class SchedulerRecoveryTests(unittest.TestCase):
                 "cwd": str(Path.cwd()),
                 "tmuxSession": "recovery-session",
                 "maxConcurrency": 1,
-                "tasks": [{"id": "one", "prompt": "Recover one worker."}],
+                "tasks": [
+                    {"id": "one", "prompt": "Recover one worker."},
+                    {"id": "two", "prompt": "Unrelated ready worker."},
+                ],
             },
         )
         with self.db:
@@ -132,6 +134,11 @@ class SchedulerRecoveryTests(unittest.TestCase):
         self,
     ) -> None:
         attempt_id, _ = self.seed_pending_attempt("orphan", pane="%orphan")
+        with self.db:
+            self.db.execute(
+                "INSERT INTO resource_leases VALUES(?,?,?,?)",
+                (self.workflow_id, "repo:orphan", attempt_id, self.dispatcher.now()),
+            )
         with (
             patch.object(self.dispatcher, "window_exists", return_value=True) as exists,
             patch.object(self.dispatcher, "launch_worker") as launch,
@@ -143,10 +150,17 @@ class SchedulerRecoveryTests(unittest.TestCase):
                 self.db, self.workflow_id, self.root
             )
 
-        exists.assert_called_once_with("%orphan")
+        self.assertEqual(2, exists.call_count)
+        exists.assert_called_with("%orphan")
         launch.assert_not_called()
         self.assertEqual("orphaned", self.attempt_state(attempt_id))
         self.assertEqual("orphaned", self.outbox_state(attempt_id))
+        self.assertEqual(
+            1,
+            self.db.execute(
+                "SELECT COUNT(*) FROM resource_leases WHERE attempt_id=?", (attempt_id,)
+            ).fetchone()[0],
+        )
         self.assertEqual(
             "in_progress",
             self.db.execute(
@@ -155,7 +169,7 @@ class SchedulerRecoveryTests(unittest.TestCase):
             ).fetchone()[0],
         )
 
-    def test_missing_manifest_and_target_is_durably_failed_and_releases_lease_once(
+    def test_vanished_orphan_is_durably_failed_and_releases_lease_once(
         self,
     ) -> None:
         attempt_id, _ = self.seed_pending_attempt("lost", pane="%gone")
@@ -166,8 +180,12 @@ class SchedulerRecoveryTests(unittest.TestCase):
             )
 
         with patch.object(
-            self.dispatcher, "window_exists", return_value=False
+            self.dispatcher, "window_exists", side_effect=[True, False]
         ) as exists:
+            self.dispatcher.reconcile_dispatch_outbox(
+                self.db, self.workflow_id, self.root
+            )
+            self.assertEqual("orphaned", self.attempt_state(attempt_id))
             self.dispatcher.reconcile_dispatch_outbox(
                 self.db, self.workflow_id, self.root
             )
@@ -175,9 +193,9 @@ class SchedulerRecoveryTests(unittest.TestCase):
                 self.db, self.workflow_id, self.root
             )
 
-        self.assertEqual(1, exists.call_count)
-        self.assertIn(self.attempt_state(attempt_id), {"lost", "failed"})
-        self.assertIn(self.outbox_state(attempt_id), {"lost", "failed"})
+        self.assertEqual(2, exists.call_count)
+        self.assertEqual("lost", self.attempt_state(attempt_id))
+        self.assertEqual("lost", self.outbox_state(attempt_id))
         self.assertEqual(
             "failed",
             self.db.execute(
@@ -196,6 +214,34 @@ class SchedulerRecoveryTests(unittest.TestCase):
             self.db.execute(
                 "SELECT COUNT(*) FROM events WHERE attempt_id=? AND type='dispatch.failed'",
                 (attempt_id,),
+            ).fetchone()[0],
+        )
+
+    def test_live_orphan_does_not_change_ready_work_capacity_behavior(self) -> None:
+        self.seed_pending_attempt("orphan-capacity", pane="%orphan")
+        launches: list[str] = []
+
+        def launch(**kwargs: Any) -> Path:
+            launches.append(kwargs["task_id"])
+            kwargs["run_dir"].mkdir(parents=True)
+            self.dispatcher.write_json(
+                kwargs["run_dir"] / "manifest.json",
+                {"state": "running", "tmux": {"windowId": "@two", "paneId": "%two"}},
+            )
+            return kwargs["run_dir"]
+
+        with (
+            patch.object(self.dispatcher, "window_exists", return_value=True),
+            patch.object(self.dispatcher, "launch_worker", side_effect=launch),
+        ):
+            self.dispatcher.tick(self.db, self.workflow_id, self.root)
+
+        self.assertEqual(["two"], launches)
+        self.assertEqual(
+            "in_progress",
+            self.db.execute(
+                "SELECT state FROM tasks WHERE workflow_id=? AND id='two'",
+                (self.workflow_id,),
             ).fetchone()[0],
         )
 

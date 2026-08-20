@@ -97,6 +97,56 @@ class SchedulerFencingTests(unittest.TestCase):
         ).fetchone()
         self.assertEqual(("second", 2), tuple(row))
 
+    def test_stale_fence_cannot_recover_orphan_but_current_fence_can(self) -> None:
+        with self.db:
+            self.db.execute(
+                "UPDATE attempts SET tmux_pane='%gone',state='orphaned' WHERE id='attempt'"
+            )
+            self.db.execute(
+                "UPDATE dispatch_outbox SET state='orphaned' WHERE attempt_id='attempt'"
+            )
+        stale = self.dispatcher.acquire_scheduler_lease(
+            self.db, self.workflow_id, owner="stale", lease_seconds=0
+        )
+        self.assertEqual(("stale", 1), stale)
+        current = self.dispatcher.acquire_scheduler_lease(
+            self.db, self.workflow_id, owner="current"
+        )
+        self.assertEqual(("current", 2), current)
+        assert stale is not None
+        assert current is not None
+
+        with patch.object(
+            self.dispatcher, "window_exists", return_value=False
+        ) as exists:
+            with self.assertRaises(RuntimeError):
+                self.dispatcher.reconcile_dispatch_outbox(
+                    self.db, self.workflow_id, self.root, fence=stale
+                )
+            exists.assert_not_called()
+            self.dispatcher.reconcile_dispatch_outbox(
+                self.db, self.workflow_id, self.root, fence=current
+            )
+
+        self.assertEqual(
+            "lost",
+            self.db.execute("SELECT state FROM attempts WHERE id='attempt'").fetchone()[
+                0
+            ],
+        )
+        self.assertEqual(
+            "lost",
+            self.db.execute(
+                "SELECT state FROM dispatch_outbox WHERE attempt_id='attempt'"
+            ).fetchone()[0],
+        )
+        self.assertEqual(
+            1,
+            self.db.execute(
+                "SELECT COUNT(*) FROM events WHERE attempt_id='attempt' AND type='dispatch.failed'"
+            ).fetchone()[0],
+        )
+
     def test_ambiguous_launching_claim_is_lost_and_never_relaunched(self) -> None:
         fence = self.dispatcher.acquire_scheduler_lease(
             self.db, self.workflow_id, owner="owner"
