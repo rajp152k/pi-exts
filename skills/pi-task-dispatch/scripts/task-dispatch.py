@@ -17,7 +17,6 @@ import shlex
 import shutil
 import sqlite3
 import subprocess
-import sys
 import textwrap
 import time
 import uuid
@@ -544,10 +543,19 @@ def db_connect(value: str) -> sqlite3.Connection:
     -- attempts inserts remain compatible.
     CREATE TABLE IF NOT EXISTS task_policies (workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, policy TEXT NOT NULL, PRIMARY KEY(workflow_id,task_id), FOREIGN KEY(workflow_id,task_id) REFERENCES tasks(workflow_id,id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS attempt_policies (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id) ON DELETE CASCADE, attempt_number INTEGER NOT NULL, retry_eligible INTEGER NOT NULL DEFAULT 0, not_before REAL, started_epoch REAL NOT NULL, last_progress_epoch REAL NOT NULL, cancel_requested_epoch REAL, decision TEXT NOT NULL DEFAULT '');
+    -- Desired workflow control and observed cancellation delivery are deliberately
+    -- additive: workflows.state remains the backwards-compatible observation.
+    CREATE TABLE IF NOT EXISTS workflow_controls (workflow_id TEXT PRIMARY KEY REFERENCES workflows(id) ON DELETE CASCADE, desired_state TEXT NOT NULL, updated_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS attempt_cancellations (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id) ON DELETE CASCADE, state TEXT NOT NULL, requested_at TEXT NOT NULL, delivered_at TEXT, acknowledged_at TEXT, observed_terminal_at TEXT);
     CREATE INDEX IF NOT EXISTS events_workflow_id ON events(workflow_id,id); CREATE INDEX IF NOT EXISTS attempts_task ON attempts(workflow_id,task_id); CREATE INDEX IF NOT EXISTS dispatch_outbox_workflow ON dispatch_outbox(workflow_id,state);
     """)
     # Existing databases predate managed worktrees. SQLite only supports additive
     # migrations here, so retain legacy manual-worktree workflows unchanged.
+    # Seed controls from the legacy observed state without rewriting it.
+    db.execute(
+        "INSERT OR IGNORE INTO workflow_controls(workflow_id,desired_state,updated_at) "
+        "SELECT id,CASE WHEN state='cancelled' THEN 'cancelled' ELSE 'running' END,updated_at FROM workflows"
+    )
     with suppress(sqlite3.OperationalError):
         db.execute(
             "ALTER TABLE tasks ADD COLUMN managed_worktrees INTEGER NOT NULL DEFAULT 0"
@@ -1202,6 +1210,10 @@ def create_workflow(
                 "INSERT INTO workflows VALUES(?,?,?,?,?,?,?,?)",
                 (workflow_id, name, str(cwd), session, limit, "draft", now(), now()),
             )
+            db.execute(
+                "INSERT INTO workflow_controls VALUES(?,?,?)",
+                (workflow_id, "running", now()),
+            )
             seen: set[str] = set()
             for item in spec["tasks"]:
                 if not isinstance(item, dict):
@@ -1648,6 +1660,113 @@ def has_write_dispatch_gate(
     return row is not None
 
 
+def workflow_desired_state(db: sqlite3.Connection, workflow_id: str) -> str:
+    """Return durable command intent, with a safe legacy-database fallback."""
+    row = db.execute(
+        "SELECT desired_state FROM workflow_controls WHERE workflow_id=?",
+        (workflow_id,),
+    ).fetchone()
+    if row:
+        return row["desired_state"]
+    state = workflow_row(db, workflow_id)["state"]
+    return "cancelled" if state == "cancelled" else "running"
+
+
+def request_attempt_cancellation(
+    db: sqlite3.Connection, workflow_id: str, attempt: sqlite3.Row
+) -> None:
+    """Durably record and deliver cancellation without claiming terminal outcome."""
+    existing = db.execute(
+        "SELECT state FROM attempt_cancellations WHERE attempt_id=?", (attempt["id"],)
+    ).fetchone()
+    if existing:
+        return
+    requested_at = now()
+    db.execute(
+        "INSERT INTO attempt_cancellations VALUES(?,?,?,?,?,?)",
+        (attempt["id"], "requested", requested_at, None, None, None),
+    )
+    event(
+        db,
+        workflow_id,
+        "cancellation.requested",
+        task_id=attempt["task_id"],
+        attempt_id=attempt["id"],
+    )
+    run_dir = Path(attempt["run_dir"])
+    try:
+        run_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (run_dir / "cancel-requested").touch(exist_ok=True)
+    except OSError as error:
+        # Do not invent delivery when the durable request cannot reach its worker.
+        event(
+            db,
+            workflow_id,
+            "cancellation.delivery-failed",
+            task_id=attempt["task_id"],
+            attempt_id=attempt["id"],
+            detail={"error": str(error)},
+        )
+        return
+    db.execute(
+        "UPDATE attempt_cancellations SET state='delivered',delivered_at=? WHERE attempt_id=?",
+        (now(), attempt["id"]),
+    )
+    event(
+        db,
+        workflow_id,
+        "cancellation.delivered",
+        task_id=attempt["task_id"],
+        attempt_id=attempt["id"],
+    )
+
+
+def observe_cancellation(
+    db: sqlite3.Connection,
+    workflow_id: str,
+    attempt: sqlite3.Row,
+    manifest: dict[str, Any],
+) -> None:
+    """Advance cancellation only from durable worker observations."""
+    row = db.execute(
+        "SELECT state FROM attempt_cancellations WHERE attempt_id=?", (attempt["id"],)
+    ).fetchone()
+    if not row:
+        return
+    state = row["state"]
+    if (
+        manifest.get("state") in {"cancelling", *TERMINAL_STATES}
+        and state == "delivered"
+    ):
+        # A terminal worker report necessarily acknowledges a delivered abort even
+        # when reconciliation did not observe its transient `cancelling` phase.
+        db.execute(
+            "UPDATE attempt_cancellations SET state='acknowledged',acknowledged_at=? WHERE attempt_id=?",
+            (now(), attempt["id"]),
+        )
+        event(
+            db,
+            workflow_id,
+            "cancellation.acknowledged",
+            task_id=attempt["task_id"],
+            attempt_id=attempt["id"],
+        )
+        state = "acknowledged"
+    if manifest.get("state") in TERMINAL_STATES and state != "observed-terminal":
+        db.execute(
+            "UPDATE attempt_cancellations SET state='observed-terminal',observed_terminal_at=? WHERE attempt_id=?",
+            (now(), attempt["id"]),
+        )
+        event(
+            db,
+            workflow_id,
+            "cancellation.observed-terminal",
+            task_id=attempt["task_id"],
+            attempt_id=attempt["id"],
+            detail={"outcome": manifest["state"]},
+        )
+
+
 def refresh(db: sqlite3.Connection, workflow_id: str) -> None:
     """Project authoritative terminal worker manifests and resolve dependencies."""
     # Retry waits are durable and use an injectable epoch clock.
@@ -1690,9 +1809,7 @@ def refresh(db: sqlite3.Connection, workflow_id: str) -> None:
                 else None
             )
             if reason:
-                run_dir = Path(attempt["run_dir"])
-                run_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-                (run_dir / "cancel-requested").touch(exist_ok=True)
+                request_attempt_cancellation(db, workflow_id, attempt)
                 db.execute(
                     "UPDATE attempt_policies SET cancel_requested_epoch=?,decision=? WHERE attempt_id=?",
                     (policy_clock(), "cancellation-requested:" + reason, attempt["id"]),
@@ -1709,6 +1826,7 @@ def refresh(db: sqlite3.Connection, workflow_id: str) -> None:
         if not manifest_path.exists():
             continue
         manifest = describe(Path(attempt["run_dir"]))
+        observe_cancellation(db, workflow_id, attempt, manifest)
         if manifest["state"] in TERMINAL_STATES:
             project_terminal_manifest(db, workflow_id, attempt, manifest)
     queued = db.execute(
@@ -1910,10 +2028,14 @@ def reconcile_dispatch_outbox(
     workflow = workflow_row(db, workflow_id)
     for item in items:
         outcome = "lost"
+        cancellation = db.execute(
+            "SELECT state FROM attempt_cancellations WHERE attempt_id=?", (item["id"],)
+        ).fetchone()
         run_dir = Path(item["run_dir"])
         manifest_path = run_dir / "manifest.json"
         if manifest_path.exists():
             manifest = load_manifest(run_dir)
+            observe_cancellation(db, workflow_id, item, manifest)
             if manifest.get("state") in TERMINAL_STATES:
                 project_terminal_manifest(db, workflow_id, item, manifest)
                 continue
@@ -1955,7 +2077,12 @@ def reconcile_dispatch_outbox(
             # A pending intent without a recorded target was never launched and may
             # be recovered once. A vanished recorded target is a lost attempt, not
             # permission to relaunch potentially side-effecting work.
-            if item["outbox_state"] == "pending" and not run_dir.exists() and not target:
+            if (
+                item["outbox_state"] == "pending"
+                and not run_dir.exists()
+                and not target
+                and cancellation is None
+            ):
                 try:
                     launch_worker(
                         task_id=item["task_id"],
@@ -2003,6 +2130,12 @@ def reconcile_dispatch_outbox(
                     error = str(launch_error)
             else:
                 error = "worker manifest and tmux target are missing"
+        if cancellation:
+            # A vanished target after a cancellation request is externally ambiguous;
+            # fail closed as lost rather than relaunching or claiming cancellation.
+            observe_cancellation(
+                db, workflow_id, item, {"state": "lost", "error": error}
+            )
         db.execute(
             "UPDATE dispatch_outbox SET state=?,updated_at=?,error=? WHERE attempt_id=?",
             (outcome, now(), error, item["id"]),
@@ -2064,6 +2197,22 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
                         "state": workflow["state"],
                         "errors": sum(item["severity"] == "error" for item in findings),
                     },
+                )
+                return
+            desired = workflow_desired_state(db, workflow_id)
+            if desired != "running":
+                active = db.execute(
+                    "SELECT COUNT(*) FROM attempts WHERE workflow_id=? AND state IN ('in_progress','orphaned')",
+                    (workflow_id,),
+                ).fetchone()[0]
+                observed = (
+                    "cancelled"
+                    if desired == "cancelled" and active == 0
+                    else ("cancelling" if desired == "cancelled" else "paused")
+                )
+                db.execute(
+                    "UPDATE workflows SET state=?,updated_at=? WHERE id=?",
+                    (observed, now(), workflow_id),
                 )
                 return
             if workflow["state"] == "draft":
@@ -2310,7 +2459,13 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
                         "SELECT state FROM tasks WHERE workflow_id=?", (workflow_id,)
                     )
                 }
-                final = "completed" if states == {"done"} else "failed"
+                final = (
+                    "cancelled"
+                    if workflow_desired_state(db, workflow_id) == "cancelled"
+                    else "completed"
+                    if states == {"done"}
+                    else "failed"
+                )
                 db.execute(
                     "UPDATE workflows SET state=?,updated_at=? WHERE id=?",
                     (final, now(), workflow_id),
@@ -2940,6 +3095,38 @@ def command_workflow_worktree(args: argparse.Namespace) -> None:
         fail("cherry-pick was verified then aborted; review and apply manually")
 
 
+def command_workflow_pause(args: argparse.Namespace) -> None:
+    db = db_connect(args.database)
+    with db:
+        workflow_row(db, args.id)
+        db.execute(
+            "INSERT OR REPLACE INTO workflow_controls VALUES(?,?,?)",
+            (args.id, "paused", now()),
+        )
+        db.execute(
+            "UPDATE workflows SET state='paused',updated_at=? WHERE id=?",
+            (now(), args.id),
+        )
+        event(db, args.id, "workflow.paused")
+
+
+def command_workflow_resume(args: argparse.Namespace) -> None:
+    db = db_connect(args.database)
+    with db:
+        workflow_row(db, args.id)
+        if workflow_desired_state(db, args.id) == "cancelled":
+            fail("cancelled workflow cannot be resumed")
+        db.execute(
+            "INSERT OR REPLACE INTO workflow_controls VALUES(?,?,?)",
+            (args.id, "running", now()),
+        )
+        db.execute(
+            "UPDATE workflows SET state='running',updated_at=? WHERE id=?",
+            (now(), args.id),
+        )
+        event(db, args.id, "workflow.resumed")
+
+
 def command_workflow_cancel(args: argparse.Namespace) -> None:
     db = db_connect(args.database)
     with db:
@@ -2956,26 +3143,42 @@ def command_workflow_cancel(args: argparse.Namespace) -> None:
             fail("no cancellable tasks")
         for task in tasks:
             attempt = db.execute(
-                "SELECT * FROM attempts WHERE workflow_id=? AND task_id=? AND state='in_progress'",
+                "SELECT * FROM attempts WHERE workflow_id=? AND task_id=? AND state IN ('in_progress','orphaned')",
                 (args.id, task["id"]),
             ).fetchone()
             if attempt:
-                run_dir = Path(attempt["run_dir"])
-                manifest = describe(run_dir)
-                if manifest["state"] not in TERMINAL_STATES:
-                    # The RPC worker sees this within 200ms and sends `abort` before
-                    # escalating. Do not kill its wrapper with terminal Ctrl-C.
-                    (run_dir / "cancel-requested").touch()
+                manifest_path = Path(attempt["run_dir"]) / "manifest.json"
+                if manifest_path.exists():
+                    manifest = load_manifest(Path(attempt["run_dir"]))
+                    if manifest.get("state") in TERMINAL_STATES:
+                        # A terminal observation wins a racing cancellation command.
+                        project_terminal_manifest(db, args.id, attempt, manifest)
+                        continue
+                # Keep the observed task outcome intact until its worker reports a
+                # terminal manifest. A request can race completion or failure.
+                request_attempt_cancellation(db, args.id, attempt)
+                continue
             db.execute(
                 "UPDATE tasks SET state='cancelled',phase=NULL,updated_at=? WHERE workflow_id=? AND id=?",
                 (now(), args.id, task["id"]),
             )
-            event(db, args.id, "task.cancelled", task_id=task["id"])
+            event(
+                db,
+                args.id,
+                "cancellation.observed-terminal",
+                task_id=task["id"],
+                detail={"outcome": "cancelled", "beforeDispatch": True},
+            )
         if not args.task:
             db.execute(
-                "UPDATE workflows SET state='cancelled',updated_at=? WHERE id=?",
+                "INSERT OR REPLACE INTO workflow_controls VALUES(?,?,?)",
+                (args.id, "cancelled", now()),
+            )
+            db.execute(
+                "UPDATE workflows SET state='cancelling',updated_at=? WHERE id=?",
                 (now(), args.id),
             )
+            event(db, args.id, "workflow.cancellation-requested")
 
 
 WATCH_COLUMNS = (
@@ -3542,6 +3745,17 @@ def build_parser() -> argparse.ArgumentParser:
         operation = worktree_subcommands.add_parser(worktree_action)
         operation.add_argument("attempt")
         operation.set_defaults(handler=command_workflow_worktree)
+    for name, handler, help_text in [
+        (
+            "pause",
+            command_workflow_pause,
+            "pause new dispatch while active attempts continue",
+        ),
+        ("resume", command_workflow_resume, "restore desired running state"),
+    ]:
+        control = wf.add_parser(name, help=help_text)
+        control.add_argument("id")
+        control.set_defaults(handler=handler)
     cancel = wf.add_parser("cancel", help="cancel a task or whole workflow")
     cancel.add_argument("id")
     cancel.add_argument("task", nargs="?")
