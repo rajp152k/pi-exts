@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-
 SCRIPT = Path(__file__).parents[1] / "scripts" / "task-dispatch.py"
 
 
@@ -49,20 +48,19 @@ class SchedulerSafetyTests(unittest.TestCase):
 
     def test_scheduler_lease_excludes_second_owner_and_can_be_released(self) -> None:
         workflow_id = self.spec["id"]
-        self.assertEqual(
-            "owner-one",
-            self.dispatcher.acquire_scheduler_lease(
-                self.db, workflow_id, owner="owner-one"
-            ),
+        first = self.dispatcher.acquire_scheduler_lease(
+            self.db, workflow_id, owner="owner-one"
         )
+        self.assertEqual(("owner-one", 1), first)
         self.assertIsNone(
             self.dispatcher.acquire_scheduler_lease(
                 self.db, workflow_id, owner="owner-two"
             )
         )
-        self.dispatcher.release_scheduler_lease(self.db, workflow_id, "owner-one")
+        assert first is not None
+        self.dispatcher.release_scheduler_lease(self.db, workflow_id, first)
         self.assertEqual(
-            "owner-two",
+            ("owner-two", 2),
             self.dispatcher.acquire_scheduler_lease(
                 self.db, workflow_id, owner="owner-two"
             ),
@@ -72,10 +70,11 @@ class SchedulerSafetyTests(unittest.TestCase):
         workflow_id = self.spec["id"]
         with self.db:
             self.db.execute(
-                "INSERT INTO scheduler_leases VALUES(?,?,?)", (workflow_id, "old", 0.0)
+                "INSERT INTO scheduler_leases(workflow_id,owner,generation,expires_at) VALUES(?,?,?,?)",
+                (workflow_id, "old", 4, 0.0),
             )
         self.assertEqual(
-            "new",
+            ("new", 5),
             self.dispatcher.acquire_scheduler_lease(self.db, workflow_id, owner="new"),
         )
 
