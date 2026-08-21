@@ -131,13 +131,36 @@ class ManagedWorktreeTests(unittest.TestCase):
             db.execute(
                 "INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    "flow", "writer", "w", "p", directory, "default-tools", 0,
-                    "[]", "in_progress", None, "n", "n", 1, "clean",
+                    "flow",
+                    "writer",
+                    "w",
+                    "p",
+                    directory,
+                    "default-tools",
+                    0,
+                    "[]",
+                    "in_progress",
+                    None,
+                    "n",
+                    "n",
+                    1,
+                    "clean",
                 ),
             )
             db.execute(
                 "INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?,?,?)",
-                ("a", "flow", "writer", directory, "in_progress", None, "n", None, None, None),
+                (
+                    "a",
+                    "flow",
+                    "writer",
+                    directory,
+                    "in_progress",
+                    None,
+                    "n",
+                    None,
+                    None,
+                    None,
+                ),
             )
             db.execute(
                 "INSERT INTO task_declarations VALUES(?,?,?,?,?,?)",
@@ -146,8 +169,19 @@ class ManagedWorktreeTests(unittest.TestCase):
             db.execute(
                 "INSERT INTO managed_worktrees VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    "a", "flow", "writer", directory, directory, "branch", "base", "owner",
-                    "clean", "pending", "[]", None, None,
+                    "a",
+                    "flow",
+                    "writer",
+                    directory,
+                    directory,
+                    "branch",
+                    "base",
+                    "owner",
+                    "clean",
+                    "pending",
+                    "[]",
+                    None,
+                    None,
                 ),
             )
             attempt = db.execute("SELECT * FROM attempts WHERE id='a'").fetchone()
