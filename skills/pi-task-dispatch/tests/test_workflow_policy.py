@@ -126,6 +126,51 @@ class PolicyTests(unittest.TestCase):
             self.db.execute("SELECT state FROM tasks WHERE id='one'").fetchone()[0],
         )
 
+    def test_writer_retry_requires_exact_attempt_revision_approval(self):
+        aid = self.seed("transport: disconnected")
+        with self.db:
+            self.db.execute("UPDATE tasks SET access='default-tools' WHERE id='one'")
+            self.db.execute(
+                "UPDATE task_policies SET policy=? WHERE workflow_id='policy' AND task_id='one'",
+                ('{"maxRetries":1,"retryOn":["transport"],"idempotency":true}',),
+            )
+            self.db.execute(
+                "INSERT INTO attempt_snapshots VALUES(?,?,?,?,?,?)",
+                (
+                    aid,
+                    "policy",
+                    1,
+                    self.d.current_revision_hash(self.db, "policy")[1],
+                    "{}",
+                    self.d.now(),
+                ),
+            )
+        with patch.object(self.d, "policy_clock", return_value=10):
+            self.d.refresh(self.db, "policy")
+        self.assertEqual(
+            "failed",
+            self.db.execute("SELECT state FROM tasks WHERE id='one'").fetchone()[0],
+        )
+
+        # Approval is bound to this failed attempt and its pinned revision.
+        with self.db:
+            self.db.execute(
+                "UPDATE attempts SET state='in_progress' WHERE id=?", (aid,)
+            )
+            self.db.execute("UPDATE tasks SET state='in_progress' WHERE id='one'")
+            self.db.execute(
+                "INSERT INTO retry_approvals VALUES(?,?,?,?,?,?)",
+                ("policy", aid, 1, "approved", "user", self.d.now()),
+            )
+        with patch.object(self.d, "policy_clock", return_value=20):
+            self.d.refresh(self.db, "policy")
+        with patch.object(self.d, "policy_clock", return_value=21):
+            self.d.refresh(self.db, "policy")
+        self.assertEqual(
+            "ready",
+            self.db.execute("SELECT state FROM tasks WHERE id='one'").fetchone()[0],
+        )
+
     def test_declared_budget_refuses_schedule(self):
         self.db.close()
         self.db = self.d.db_connect(str(Path(self.temp.name) / "budget-db"))

@@ -206,9 +206,9 @@ class ObservabilityTests(unittest.TestCase):
             target = self.d.launch_workflow_rpc_window(
                 "pi-exts", "fixture", "reader", ["worker"]
             )
-        self.assertEqual(("eph-pi-exts", "@7", "%9"), target)
+        self.assertEqual(("eph-pi-exts-fixture", "@7", "%9"), target)
         self.assertEqual(["new-session"], [c[0] for c in calls])
-        self.assertIn("eph-pi-exts", calls[0])
+        self.assertIn("eph-pi-exts-fixture", calls[0])
         self.assertNotIn("split-window", calls[0])
         calls.clear()
 
@@ -220,7 +220,7 @@ class ObservabilityTests(unittest.TestCase):
                 "pi-exts", "fixture", "writer", ["worker"]
             )
         self.assertEqual(["new-window"], [c[0] for c in calls])
-        self.assertIn("eph-pi-exts:", calls[0])
+        self.assertIn("eph-pi-exts-fixture:", calls[0])
 
     def test_uv_script_command_uses_locked_managed_python(self) -> None:
         with patch.object(self.d.shutil, "which", return_value="/usr/local/bin/uv"):

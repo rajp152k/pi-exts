@@ -113,9 +113,10 @@ def window_exists(window_id: str) -> bool:
     return result.returncode == 0
 
 
-def ephemeral_session_name(session: str) -> str:
-    """Return the derived tmux session that owns workflow worker windows."""
-    return f"eph-{session}"
+def ephemeral_session_name(session: str, workflow_id: str | None = None) -> str:
+    """Return a workflow-scoped, deterministic ephemeral tmux session name."""
+    suffix = f"-{workflow_id}" if workflow_id else ""
+    return f"eph-{session}{suffix}"[:60]
 
 
 def tmux_session_exists(session: str) -> bool:
@@ -211,7 +212,11 @@ def launch_worker(
     worker_session = session
     if workflow:
         worker_session, window_id, pane_id = launch_workflow_rpc_window(
-            session, str(workflow["id"]), task_id, command
+            session,
+            str(workflow["id"]),
+            task_id,
+            command,
+            owner_marker=workflow.get("sessionOwnerMarker"),
         )
     else:
         # Preserve the legacy dispatch contract: one worker, one window.
@@ -244,20 +249,46 @@ def launch_worker(
 
 
 def launch_workflow_rpc_window(
-    session: str, workflow_id: str, task_id: str, command: list[str]
+    session: str,
+    workflow_id: str,
+    task_id: str,
+    command: list[str],
+    *,
+    owner_marker: str | None = None,
 ) -> tuple[str, str, str]:
     """Launch every workflow worker in its own window of a derived session.
 
     Isolating workers from the user's source session avoids tmux's minimum-pane
     geometry limit while retaining a deterministic, inspectable session name.
     """
-    worker_session = ephemeral_session_name(session)
+    worker_session = ephemeral_session_name(session, workflow_id)
     name = f"rpc-{workflow_id}-{task_id}"[:40]
     common = ["-d", "-P", "-F", "#{window_id},#{pane_id}", "-n", name]
-    if tmux_session_exists(worker_session):
+    exists = tmux_session_exists(worker_session)
+    if exists and owner_marker is not None:
+        marker = run_tmux(
+            ["show-options", "-qv", "-t", worker_session, "@task_dispatch_owner"]
+        ).stdout.strip()
+        if not marker or marker != owner_marker:
+            fail(
+                "existing workflow tmux session is unmarked or owned by another workflow"
+            )
+    if exists:
         result = run_tmux(["new-window", *common, "-t", f"{worker_session}:", *command])
     else:
         result = run_tmux(["new-session", *common, "-s", worker_session, *command])
+        if owner_marker is not None:
+            # Never adopt an unmarked session: persist and set the ownership marker
+            # before any later worker can use this workflow-scoped session.
+            run_tmux(
+                [
+                    "set-option",
+                    "-t",
+                    worker_session,
+                    "@task_dispatch_owner",
+                    owner_marker,
+                ]
+            )
     try:
         window_id, pane_id = result.stdout.strip().split(",", maxsplit=1)
     except ValueError:
@@ -544,6 +575,10 @@ def db_connect(value: str) -> sqlite3.Connection:
     -- attempts inserts remain compatible.
     CREATE TABLE IF NOT EXISTS task_policies (workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, policy TEXT NOT NULL, PRIMARY KEY(workflow_id,task_id), FOREIGN KEY(workflow_id,task_id) REFERENCES tasks(workflow_id,id) ON DELETE CASCADE);
     CREATE TABLE IF NOT EXISTS attempt_policies (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id) ON DELETE CASCADE, attempt_number INTEGER NOT NULL, retry_eligible INTEGER NOT NULL DEFAULT 0, not_before REAL, started_epoch REAL NOT NULL, last_progress_epoch REAL NOT NULL, cancel_requested_epoch REAL, decision TEXT NOT NULL DEFAULT '');
+    CREATE TABLE IF NOT EXISTS attempt_snapshots (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id) ON DELETE CASCADE, workflow_id TEXT NOT NULL, revision INTEGER NOT NULL, content_hash TEXT NOT NULL, task_snapshot TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS attempt_progress_evidence (attempt_id TEXT NOT NULL REFERENCES attempts(id) ON DELETE CASCADE, sequence INTEGER NOT NULL, event_type TEXT NOT NULL, observed_at REAL NOT NULL, PRIMARY KEY(attempt_id,sequence));
+    CREATE TABLE IF NOT EXISTS retry_approvals (workflow_id TEXT NOT NULL, failed_attempt_id TEXT NOT NULL REFERENCES attempts(id) ON DELETE CASCADE, revision INTEGER NOT NULL, decision TEXT NOT NULL, approver TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(workflow_id,failed_attempt_id,revision));
+    CREATE TABLE IF NOT EXISTS workflow_sessions (workflow_id TEXT PRIMARY KEY REFERENCES workflows(id) ON DELETE CASCADE, session_name TEXT NOT NULL UNIQUE, owner_marker TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL);
     -- Desired workflow control and observed cancellation delivery are deliberately
     -- additive: workflows.state remains the backwards-compatible observation.
     CREATE TABLE IF NOT EXISTS workflow_controls (workflow_id TEXT PRIMARY KEY REFERENCES workflows(id) ON DELETE CASCADE, desired_state TEXT NOT NULL, updated_at TEXT NOT NULL);
@@ -634,6 +669,17 @@ def persist_revision(
         (workflow_id, revision),
     )
     return revision
+
+
+def current_revision_hash(db: sqlite3.Connection, workflow_id: str) -> tuple[int, str]:
+    revision = current_revision(db, workflow_id)
+    row = db.execute(
+        "SELECT content_hash FROM workflow_revisions WHERE workflow_id=? AND revision=?",
+        (workflow_id, revision),
+    ).fetchone()
+    if not row:
+        fail(f"workflow revision is missing: {workflow_id}/{revision}")
+    return revision, row["content_hash"]
 
 
 def current_revision(db: sqlite3.Connection, workflow_id: str) -> int:
@@ -735,6 +781,7 @@ def policy_for(
             "noProgressSeconds",
             "tokenBudget",
             "costBudget",
+            "idempotency",
         )
         if key in source
     }
@@ -774,6 +821,16 @@ def policy_errors(task_id: str, policy: dict[str, Any]) -> list[dict[str, Any]]:
                     remediation="Use a non-negative number.",
                 )
             )
+    if "idempotency" in policy and not isinstance(policy["idempotency"], bool):
+        findings.append(
+            finding(
+                "invalid-idempotency-policy",
+                "error",
+                f"task {task_id} idempotency must be boolean",
+                task_ids=[task_id],
+                remediation="Declare idempotency: true only for safe writer retries.",
+            )
+        )
     if "retryOn" in policy and (
         not isinstance(policy["retryOn"], list)
         or not set(policy["retryOn"]).issubset(RETRY_OUTCOMES)
@@ -1220,6 +1277,15 @@ def create_workflow(
                 "INSERT INTO workflow_controls VALUES(?,?,?)",
                 (workflow_id, "running", now()),
             )
+            db.execute(
+                "INSERT INTO workflow_sessions VALUES(?,?,?,?)",
+                (
+                    workflow_id,
+                    ephemeral_session_name(session, workflow_id),
+                    uuid.uuid4().hex,
+                    now(),
+                ),
+            )
             seen: set[str] = set()
             for item in spec["tasks"]:
                 if not isinstance(item, dict):
@@ -1348,8 +1414,10 @@ def acquire_scheduler_lease(
 ) -> SchedulerFence | None:
     """Acquire `(owner, generation)`, incrementing generation on expiry takeover."""
     owner = owner or uuid.uuid4().hex
+    started_transaction = not db.in_transaction
     try:
-        db.execute("BEGIN IMMEDIATE")
+        if started_transaction:
+            db.execute("BEGIN IMMEDIATE")
         current = db.execute(
             "SELECT owner,generation,expires_at FROM scheduler_leases WHERE workflow_id=?",
             (workflow_id,),
@@ -1376,10 +1444,12 @@ def acquire_scheduler_lease(
                 ),
             ).rowcount
             if not changed:
-                db.rollback()
+                if started_transaction:
+                    db.rollback()
                 return None
         else:
-            db.rollback()
+            if started_transaction:
+                db.rollback()
             return None
         event(
             db,
@@ -1387,10 +1457,11 @@ def acquire_scheduler_lease(
             "scheduler.lease-acquired",
             detail={"owner": owner, "generation": generation},
         )
-        db.commit()
+        if started_transaction:
+            db.commit()
         return owner, generation
     except sqlite3.OperationalError:
-        if db.in_transaction:
+        if started_transaction:
             db.rollback()
         return None
 
@@ -1429,6 +1500,27 @@ def release_scheduler_lease(
                 "scheduler.lease-released",
                 detail={"owner": fence[0], "generation": fence[1]},
             )
+
+
+def workflow_session_marker(db: sqlite3.Connection, workflow_id: str) -> str:
+    """Return the persisted owner marker, backfilling legacy workflows safely."""
+    row = db.execute(
+        "SELECT owner_marker FROM workflow_sessions WHERE workflow_id=?", (workflow_id,)
+    ).fetchone()
+    if row:
+        return row["owner_marker"]
+    workflow = workflow_row(db, workflow_id)
+    marker = uuid.uuid4().hex
+    db.execute(
+        "INSERT INTO workflow_sessions VALUES(?,?,?,?)",
+        (
+            workflow_id,
+            ephemeral_session_name(workflow["tmux_session"], workflow_id),
+            marker,
+            now(),
+        ),
+    )
+    return marker
 
 
 def workflow_row(db: sqlite3.Connection, workflow_id: str) -> sqlite3.Row:
@@ -1608,10 +1700,28 @@ def queue_retry_if_allowed(
     ).fetchone()
     attempt_number = row[0] if row else 1
     outcome = retry_outcome(manifest)
+    task = db.execute(
+        "SELECT access FROM tasks WHERE workflow_id=? AND id=?",
+        (workflow_id, attempt["task_id"]),
+    ).fetchone()
+    snapshot = db.execute(
+        "SELECT revision FROM attempt_snapshots WHERE attempt_id=?", (attempt["id"],)
+    ).fetchone()
+    writer_approved = True
+    if task and task["access"] == "default-tools":
+        writer_approved = bool(
+            policy.get("idempotency", False)
+            and snapshot
+            and db.execute(
+                "SELECT 1 FROM retry_approvals WHERE workflow_id=? AND failed_attempt_id=? AND revision=? AND decision='approved'",
+                (workflow_id, attempt["id"], snapshot["revision"]),
+            ).fetchone()
+        )
     eligible = bool(
         outcome
         and outcome in policy.get("retryOn", [])
         and attempt_number <= policy.get("maxRetries", 0)
+        and writer_approved
     )
     not_before = (
         policy_clock() + policy.get("retryBackoffSeconds", 0) if eligible else None
@@ -1632,7 +1742,11 @@ def queue_retry_if_allowed(
             "policy.retry-refused",
             task_id=attempt["task_id"],
             attempt_id=attempt["id"],
-            detail={"outcome": outcome, "attempt": attempt_number},
+            detail={
+                "outcome": outcome,
+                "attempt": attempt_number,
+                "writerApproval": writer_approved,
+            },
         )
         return False
     db.execute(
@@ -1837,8 +1951,68 @@ def observe_cancellation(
         )
 
 
-def refresh(db: sqlite3.Connection, workflow_id: str) -> None:
-    """Project authoritative terminal worker manifests and resolve dependencies."""
+VALID_PROGRESS_EVENTS = {
+    "agent_start",
+    "tool_execution_start",
+    "tool_execution_end",
+    "message_update",
+    "message_end",
+    "compaction_start",
+    "auto_retry_start",
+    "agent_settled",
+    "heartbeat",
+}
+
+
+def ingest_progress_evidence(
+    db: sqlite3.Connection, workflow_id: str, attempt: sqlite3.Row
+) -> None:
+    """Advance no-progress time only for a newly observed valid RPC event."""
+    path = Path(attempt["run_dir"]) / "events.jsonl"
+    if not path.is_file():
+        return
+    try:
+        lines = path.read_bytes().splitlines()
+    except OSError:
+        return
+    for sequence, line in enumerate(lines, start=1):
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        event_type = value.get("type") if isinstance(value, dict) else None
+        if event_type not in VALID_PROGRESS_EVENTS:
+            continue
+        inserted = db.execute(
+            "INSERT OR IGNORE INTO attempt_progress_evidence VALUES(?,?,?,?)",
+            (attempt["id"], sequence, event_type, policy_clock()),
+        ).rowcount
+        if inserted:
+            db.execute(
+                "UPDATE attempt_policies SET last_progress_epoch=? WHERE attempt_id=?",
+                (policy_clock(), attempt["id"]),
+            )
+            event(
+                db,
+                workflow_id,
+                "attempt.progress",
+                task_id=attempt["task_id"],
+                attempt_id=attempt["id"],
+                detail={"sequence": sequence, "type": event_type},
+            )
+
+
+def refresh(
+    db: sqlite3.Connection,
+    workflow_id: str,
+    *,
+    fence: SchedulerFence | None = None,
+) -> None:
+    """Project worker evidence and statuses while holding a scheduler fence."""
+    # Scheduler paths always supply their fence.  The unfenced form is retained
+    # only for deterministic read/projection tests and legacy API callers.
+    if fence is not None:
+        require_scheduler_fence(db, workflow_id, fence)
     # Retry waits are durable and use an injectable epoch clock.
     for row in db.execute(
         "SELECT t.id, ap.not_before FROM tasks t JOIN attempts a ON a.workflow_id=t.workflow_id AND a.task_id=t.id JOIN attempt_policies ap ON ap.attempt_id=a.id WHERE t.workflow_id=? AND t.state='queued' AND t.phase='retry_wait' AND ap.retry_eligible=1 ORDER BY ap.attempt_number DESC",
@@ -1854,6 +2028,9 @@ def refresh(db: sqlite3.Connection, workflow_id: str) -> None:
         "SELECT * FROM attempts WHERE workflow_id=? AND state IN ('in_progress','orphaned')",
         (workflow_id,),
     ):
+        if fence is not None:
+            require_scheduler_fence(db, workflow_id, fence)
+        ingest_progress_evidence(db, workflow_id, attempt)
         policy_row = db.execute(
             "SELECT policy FROM task_policies WHERE workflow_id=? AND task_id=?",
             (workflow_id, attempt["task_id"]),
@@ -2012,6 +2189,29 @@ def build_attempt_context(
     managed = db.execute(
         "SELECT * FROM managed_worktrees WHERE attempt_id=?", (attempt_id,)
     ).fetchone()
+    snapshot = db.execute(
+        "SELECT revision,content_hash,task_snapshot FROM attempt_snapshots WHERE attempt_id=?",
+        (attempt_id,),
+    ).fetchone()
+    if snapshot and snapshot["revision"] != current_revision(db, workflow_id):
+        raise AttemptContextError(
+            "attempt is not pinned to the current workflow revision"
+        )
+    try:
+        task_snapshot = (
+            json.loads(snapshot["task_snapshot"])
+            if snapshot
+            else {
+                "id": task_id,
+                "prompt": task["prompt"],
+                "cwd": task["cwd"],
+                "access": task["access"],
+            }
+        )
+    except (TypeError, json.JSONDecodeError) as error:
+        raise AttemptContextError("attempt task snapshot is invalid") from error
+    if not isinstance(task_snapshot, dict):
+        raise AttemptContextError("attempt task snapshot is invalid")
     declaration = db.execute(
         "SELECT * FROM task_declarations WHERE workflow_id=? AND task_id=?",
         (workflow_id, task_id),
@@ -2023,11 +2223,15 @@ def build_attempt_context(
         "handoff": "",
     }
     # Gates are deliberately attempt-less and therefore cannot contribute reports.
+    revision, content_hash = current_revision_hash(db, workflow_id)
+    # Completed reports belong to the immutable revision that produced them.
+    # A revised workflow must rerun its dependencies rather than injecting stale text.
     parents = db.execute(
         "SELECT a.* FROM dependencies d JOIN attempts a ON a.workflow_id=d.workflow_id AND a.task_id=d.depends_on "
+        "LEFT JOIN attempt_snapshots s ON s.attempt_id=a.id "
         "LEFT JOIN task_gates g ON g.workflow_id=d.workflow_id AND g.task_id=d.depends_on "
-        "WHERE d.workflow_id=? AND d.task_id=? AND a.state='done' AND g.task_id IS NULL ORDER BY d.depends_on, a.started_at, a.id",
-        (workflow_id, task_id),
+        "WHERE d.workflow_id=? AND d.task_id=? AND a.state='done' AND (s.attempt_id IS NULL OR (s.revision=? AND s.content_hash=?)) AND g.task_id IS NULL ORDER BY d.depends_on, a.started_at, a.id",
+        (workflow_id, task_id, revision, content_hash),
     ).fetchall()
     expected = db.execute(
         "SELECT d.depends_on FROM dependencies d LEFT JOIN task_gates g ON g.workflow_id=d.workflow_id AND g.task_id=d.depends_on "
@@ -2070,6 +2274,9 @@ def build_attempt_context(
         raise AttemptContextError(f"task {task_id} declarations are invalid") from error
     return {
         "workflowId": workflow_id,
+        "workflowRevision": revision,
+        "workflowContentHash": content_hash,
+        "taskSnapshot": task_snapshot,
         "taskId": task_id,
         "attemptId": attempt_id,
         "artifactRoot": str(root),
@@ -2222,6 +2429,9 @@ def reconcile_dispatch_outbox(
                             "id": workflow_id,
                             "taskId": item["task_id"],
                             "attemptId": item["id"],
+                            "sessionOwnerMarker": workflow_session_marker(
+                                db, workflow_id
+                            ),
                         },
                         context=build_attempt_context(
                             db, workflow_id, item, item["id"], root
@@ -2347,11 +2557,11 @@ def reconcile_workflow(
         return
     with db:
         require_scheduler_fence(db, workflow_id, fence)
-        refresh(db, workflow_id)
+        refresh(db, workflow_id, fence=fence)
     reconcile_dispatch_outbox(db, workflow_id, root, fence=fence)
     with db:
         require_scheduler_fence(db, workflow_id, fence)
-        refresh(db, workflow_id)
+        refresh(db, workflow_id, fence=fence)
 
 
 def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
@@ -2400,7 +2610,7 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
                     (now(), workflow_id),
                 )
                 event(db, workflow_id, "workflow.started")
-            reconcile_dispatch_outbox(db, workflow_id, root)
+            reconcile_dispatch_outbox(db, workflow_id, root, fence=owner)
             active = db.execute(
                 "SELECT COUNT(*) FROM attempts WHERE workflow_id=? AND state='in_progress'",
                 (workflow_id,),
@@ -2543,6 +2753,25 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
                         None,
                         None,
                         None,
+                    ),
+                )
+                revision, content_hash = current_revision_hash(db, workflow_id)
+                task_snapshot = {
+                    "id": task["id"],
+                    "prompt": task["prompt"],
+                    "cwd": task["cwd"],
+                    "access": task["access"],
+                    "resources": parse_resources(task["resources"]),
+                }
+                db.execute(
+                    "INSERT INTO attempt_snapshots VALUES(?,?,?,?,?,?)",
+                    (
+                        attempt_id,
+                        workflow_id,
+                        revision,
+                        content_hash,
+                        json.dumps(task_snapshot, sort_keys=True),
+                        now(),
                     ),
                 )
                 db.execute(
@@ -2862,6 +3091,32 @@ def command_workflow_gates(args: argparse.Namespace) -> None:
             indent=2,
         )
     )
+
+
+def command_workflow_retry_approve(args: argparse.Namespace) -> None:
+    """Record explicit user approval for one failed writer attempt and revision."""
+    db = db_connect(args.database)
+    row = db.execute(
+        "SELECT a.workflow_id,a.task_id,a.state,s.revision FROM attempts a JOIN attempt_snapshots s ON s.attempt_id=a.id WHERE a.id=? AND a.workflow_id=?",
+        (args.attempt, args.id),
+    ).fetchone()
+    if not row or row["state"] != "failed":
+        fail("retry approval requires an existing failed pinned attempt")
+    if row["revision"] != current_revision(db, args.id):
+        fail("retry approval must match the current pinned workflow revision")
+    with db:
+        db.execute(
+            "INSERT OR REPLACE INTO retry_approvals VALUES(?,?,?,?,?,?)",
+            (args.id, args.attempt, row["revision"], "approved", args.approver, now()),
+        )
+        event(
+            db,
+            args.id,
+            "policy.retry-approved",
+            task_id=row["task_id"],
+            attempt_id=args.attempt,
+            detail={"revision": row["revision"], "approver": args.approver},
+        )
 
 
 def command_workflow_gate_decision(args: argparse.Namespace) -> None:
@@ -3988,6 +4243,13 @@ def build_parser() -> argparse.ArgumentParser:
     revise.add_argument("--file", required=True)
     revise.add_argument("--rationale", required=True)
     revise.set_defaults(handler=command_workflow_revise)
+    retry_approve = wf.add_parser(
+        "retry-approve", help="approve retry of one failed writer attempt"
+    )
+    retry_approve.add_argument("id")
+    retry_approve.add_argument("attempt")
+    retry_approve.add_argument("--approver", required=True)
+    retry_approve.set_defaults(handler=command_workflow_retry_approve)
     gates = wf.add_parser("gates", help="show current-revision gate decisions")
     gates.add_argument("id")
     gates.set_defaults(handler=command_workflow_gates)

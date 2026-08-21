@@ -76,7 +76,7 @@ task-dispatch workflow events implementation-plan --follow
 task-dispatch workflow inspect implementation-plan map-relevant-modules
 ```
 
-`workflow watch implementation-plan` opens a dependency-aware Textual live view in a new window of the workflow's configured tmux session. Its default compact Gantt uses one row per task: a stage tag plus an adaptive bar across observed attempt time (not a speculative completion estimate), keeping retries on the same row. Press `g` to switch to the explicit whole-workflow dependency DAG, and `v` to cycle Gantt, DAG, and the legacy Kanban card board. Workflow workers themselves use one window each in a derived detached session, `eph-<tmuxSession>` (for example, `eph-pi-exts`), so worker panes never exhaust the source session's geometry. It drives reconciliation/scheduling by default. The view scrolls vertically with arrows, Page Up/Down, Home/End, or the mouse wheel when tasks exceed the screen. Press `r` to reconcile/schedule and `q` to exit. The command prints the exact `tmux select-window` target; use `--no-drive` for observation only.
+`workflow watch implementation-plan` opens a dependency-aware Textual live view in a new window of the workflow's configured tmux session. Its default compact Gantt uses one row per task: a stage tag plus an adaptive bar across observed attempt time (not a speculative completion estimate), keeping retries on the same row. Press `g` to switch to the explicit whole-workflow dependency DAG, and `v` to cycle Gantt, DAG, and the legacy Kanban card board. Workflow workers themselves use one window each in a workflow-scoped detached session, `eph-<tmuxSession>-<workflowId>`, with a persisted ownership marker; an existing unmarked or mismatched session is rejected rather than adopted. It drives reconciliation/scheduling by default. The view scrolls vertically with arrows, Page Up/Down, Home/End, or the mouse wheel when tasks exceed the screen. Press `r` to reconcile/schedule and `q` to exit. The command prints the exact `tmux select-window` target; use `--no-drive` for observation only.
 
 ### Validation and refinement
 
@@ -93,7 +93,7 @@ Use the refinement loop: resolve findings the agent can establish safely; ask a 
 
 > **Current limit:** recorded warning overrides, persisted refinement rounds/human answers, and a first-class `refining` state are still pending.
 
-The scheduler observes `maxConcurrency` and resource leases. `read:<name>` leases are shared; `write:<name>` leases are exclusive against reads and writes. Untagged legacy resources (including `worktree:<name>`) remain exclusive. A task cannot declare both read and write for one name; every default-tools task needs a `worktree:<name>` resource. Cancellation is explicit:
+Attempts pin an immutable workflow revision hash and task snapshot. A revision change invalidates completed dependency reports, so they are never injected across revisions. No-progress policy advances only from a new valid RPC event or worker heartbeat, never from polling or tmux liveness. A default-tools retry requires declared `idempotency: true` and a durable approval tied to the failed attempt and its pinned revision. The scheduler observes `maxConcurrency` and resource leases. `read:<name>` leases are shared; `write:<name>` leases are exclusive against reads and writes. Untagged legacy resources (including `worktree:<name>`) remain exclusive. A task cannot declare both read and write for one name; every default-tools task needs a `worktree:<name>` resource. Cancellation is explicit:
 
 ```bash
 task-dispatch workflow cancel implementation-plan map-relevant-modules
@@ -176,4 +176,4 @@ task-dispatch cancel --run ~/.pi/agent/task-runs/<timestamp>-domain-scout
 task-dispatch wait --run ~/.pi/agent/task-runs/<timestamp>-domain-scout --interval 5 --timeout 60
 ```
 
-For RPC workers, `cancel` records a cancellation request. The worker sends Pi's RPC `abort` command and escalates only after its bounded grace period. It does not kill a tmux window. Do not remove task artifacts unless the user requests cleanup.
+For RPC workers, `cancel` records a cancellation request. The worker sends Pi's RPC `abort` command and escalates only after its bounded grace period. It does not kill a tmux window. No tmux session or managed worktree is destructively cleaned up automatically; do not remove task artifacts unless the user requests manual cleanup.

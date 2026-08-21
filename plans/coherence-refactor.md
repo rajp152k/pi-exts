@@ -171,7 +171,8 @@ Start with schemas, templates, and contract tests. Extract a shared package only
 
 - Write focused reproductions for each audit lead: revision execution, cancellation race, heartbeat/no-progress, orphan capacity/leases, writer retry, and ephemeral-session cleanup/identity.
 - Decide and document the semantics; make the associated tests deterministic.
-- Version any compiled workflow plan and pin attempts/artifacts to it.
+- Implemented Phase 1 subset: attempts pin immutable workflow revision/hash/task snapshots; changed revisions prevent injection of completed dependency artifacts from an older revision; scheduler progress accepts only new valid RPC/heartbeat evidence; default-tools retries require declared idempotency and exact failed-attempt/revision approval; workflow worker sessions are ownership-marked and workflow-scoped; Git/audit failures fail closed.
+- Remaining limitation: tmux/worktree cleanup is intentionally manual-only; no automatic destructive cleanup is implemented.
 
 **Gate:** no dashboard, backend, or broad composition work until each P0 runtime claim has a test and an explicit decision.
 

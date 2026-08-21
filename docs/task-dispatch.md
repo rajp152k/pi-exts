@@ -71,7 +71,7 @@ The watcher is the required observable execution record, including for short wor
 
 Press `g` to switch between that Gantt and an explicit dependency **DAG** (`dependency [stage] → dependent [stage]`); this provides a whole-workflow dependency view using the same filters. Press `v` to cycle Gantt, DAG, and the legacy four-column **Queued / Ready / In progress / Terminated** card board. Terminal tasks retain their state tag (`DONE`, `FAILED`, `CANCELLED`, `BLOCKED`, `ORPHANED`, or `LOST`). The view scrolls vertically with arrow keys, Page Up/Down, Home/End, or the mouse wheel. Controls are deliberately display-only except for `r`: `j`/`k` select, `d` shows bounded prompt/dependency/artifact/report/RPC/tmux details, `s`/`f`/`a` cycle state/resource/agent filters, `x` hides terminal tasks for this screen only, and `0` restores them. `r` performs an immediate tick and `q` exits. Hiding/resetting never deletes SQLite records or artifacts; use `workflow export` and `workflow events --jsonl` to preserve or export durable history. Pass `--no-drive` to observe without scheduling.
 
-Workflow workers run one per tmux window in a derived detached session named `eph-<tmuxSession>` (for example, `eph-pi-exts`). This keeps worker geometry separate from the user's session and avoids tmux's minimum-pane-size limit. The workflow board remains in `tmuxSession`; attempt manifests record the derived worker session and its window/pane IDs. The legacy `dispatch` command still opens one window per worker in its requested session. A failed tmux session/window creation is recorded by normal outbox reconciliation rather than being treated as a successful launch.
+Workflow workers run one per tmux window in a workflow-scoped detached session named `eph-<tmuxSession>-<workflowId>`. SQLite persists a unique ownership marker; an existing unmarked or differently marked session is rejected rather than adopted. This keeps worker geometry separate from the user's session. The workflow board remains in `tmuxSession`; manifests record the derived worker session and window/pane IDs. No automatic destructive tmux/worktree cleanup is performed; cleanup remains a manual operator action.
 
 ## Draft a workflow from a goal
 
@@ -172,8 +172,12 @@ It creates a temporary database/root and tmux session and cleans both up. It
 only verifies launch; inspect the printed run before treating any output as a
 result.
 
+## Runtime safety semantics
+
+Attempts pin the workflow revision hash and task snapshot at creation. Dependency reports are injected only when their completed attempt has the current matching revision; revising a workflow therefore invalidates old completed dependency artifacts. Git/worktree command failures and audit failures fail closed. Scheduler status projection runs under its lease fence; no-progress time advances only when a newly observed valid RPC event or worker heartbeat is persisted, never from polling or tmux liveness. A `default-tools` retry additionally requires declared `idempotency: true` and a durable approval for that exact failed attempt and revision (`workflow retry-approve <workflow> <attempt> --approver <user>`); retries are otherwise refused.
+
 ## Current limits
 
-This is a practical local workflow tool, not a production workflow service. Avoid dependency cycles, concurrent scheduler/watch processes, and relying on crash recovery for critical work. A dispatch interruption can leave orphaned tmux workers; cancellation and resource-lease cleanup are eventually reconciled on a tick. Keep a human responsible for reviewing workflow specs, approving write tasks, and consolidating worker findings.
+This is a practical local workflow tool, not a production workflow service. Avoid dependency cycles, concurrent scheduler/watch processes, and relying on crash recovery for critical work. A dispatch interruption can leave orphaned tmux workers; cancellation and resource leases are reconciled on a tick, but tmux sessions and managed worktrees are deliberately never destructively cleaned up automatically. Keep a human responsible for manual cleanup, reviewing workflow specs, approving write retries, and consolidating worker findings.
 
 For the agent-facing operational contract, see [`skills/pi-task-dispatch/SKILL.md`](../skills/pi-task-dispatch/SKILL.md).
