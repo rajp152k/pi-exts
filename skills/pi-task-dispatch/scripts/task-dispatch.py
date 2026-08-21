@@ -1518,10 +1518,21 @@ def audit_managed_worktree(
         return True
     worktree = Path(row["worktree_path"])
     try:
-        changed = git_value(
-            worktree, "diff", "--name-only", f"{row['base_revision']}..HEAD"
-        ).splitlines()
-        clean = not git_value(worktree, "status", "--porcelain")
+        # Writers deliberately return an uncommitted patch for explicit human
+        # integration, so compare the base tree with the working tree rather
+        # than requiring a clean worktree. Include untracked files because a
+        # new source file is part of that patch but absent from git diff.
+        changed = sorted(
+            set(
+                git_value(
+                    worktree, "diff", "--name-only", row["base_revision"]
+                ).splitlines()
+                + git_value(
+                    worktree, "ls-files", "--others", "--exclude-standard"
+                ).splitlines()
+            )
+        )
+        clean = not changed
     except SystemExit:
         changed, clean = [], False
     declaration = db.execute(
@@ -1542,7 +1553,7 @@ def audit_managed_worktree(
         )
 
     mismatches = [path for path in changed if not permitted(path)]
-    verified = clean and not mismatches
+    verified = not mismatches
     db.execute(
         "UPDATE managed_worktrees SET verification_state=?,changed_paths=? WHERE attempt_id=?",
         ("verified" if verified else "failed", json.dumps(changed), attempt["id"]),

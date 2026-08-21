@@ -121,6 +121,46 @@ class ManagedWorktreeTests(unittest.TestCase):
                 ).fetchone()[0],
             )
 
+    def test_audit_accepts_declared_uncommitted_and_untracked_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = self.d.db_connect(str(Path(directory) / "db.sqlite"))
+            db.execute(
+                "INSERT INTO workflows VALUES(?,?,?,?,?,?,?,?)",
+                ("flow", "flow", directory, "s", 1, "running", "n", "n"),
+            )
+            db.execute(
+                "INSERT INTO tasks VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "flow", "writer", "w", "p", directory, "default-tools", 0,
+                    "[]", "in_progress", None, "n", "n", 1, "clean",
+                ),
+            )
+            db.execute(
+                "INSERT INTO attempts VALUES(?,?,?,?,?,?,?,?,?,?)",
+                ("a", "flow", "writer", directory, "in_progress", None, "n", None, None, None),
+            )
+            db.execute(
+                "INSERT INTO task_declarations VALUES(?,?,?,?,?,?)",
+                ("flow", "writer", "[]", "[]", '["allowed.py", "new.py"]', ""),
+            )
+            db.execute(
+                "INSERT INTO managed_worktrees VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    "a", "flow", "writer", directory, directory, "branch", "base", "owner",
+                    "clean", "pending", "[]", None, None,
+                ),
+            )
+            attempt = db.execute("SELECT * FROM attempts WHERE id='a'").fetchone()
+            with patch.object(
+                self.d, "git_value", side_effect=["allowed.py\n", "new.py\n"]
+            ):
+                self.assertTrue(self.d.audit_managed_worktree(db, "flow", attempt))
+            state, changed = db.execute(
+                "SELECT verification_state,changed_paths FROM managed_worktrees WHERE attempt_id='a'"
+            ).fetchone()
+            self.assertEqual("verified", state)
+            self.assertEqual(["allowed.py", "new.py"], self.d.json.loads(changed))
+
 
 if __name__ == "__main__":
     unittest.main()
