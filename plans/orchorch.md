@@ -1,0 +1,115 @@
+# Orchorch — campaign orchestration design
+
+## Status
+
+**Planned. Do not implement until the coherence refactor is complete through Phase 3.**
+
+`orchorch` is the proposed higher-order orchestration practice and capability for coordinating multiple durable task-dispatch workflows toward one bounded outcome. It is not a general control plane and must preserve child workflow SQLite databases and artifacts as their respective authorities.
+
+## Glossary
+
+| Term | Meaning |
+| --- | --- |
+| Campaign | A bounded, durable coordination of phases and child workflows toward one outcome. |
+| Design / simulate | A dry run: strategy and predicted execution only; creates no workflow, tmux, or mutable runtime state. |
+| Scout | The discovery stage that maps unknowns, risks, interfaces, evidence, and user decisions before commitment. |
+| Strategy | The approved campaign plan: phases, workflows, model policy, budgets, gates, integration ownership, and acceptance checks. |
+| Phase | An ordered outcome boundary inside a campaign. |
+| Workflow | A child task-dispatch DAG with its own SQLite database and artifact root. |
+| Task / attempt | Existing task-dispatch meanings: a DAG node and one concrete execution of it. |
+| Integration checkpoint | Mandatory review, verification, and Git-recording boundary after a writer workflow. |
+| Consolidation | The terminal campaign report of outcome, evidence, incidents, opportunities, and required attention. |
+| Attention event | A deduplicated, actionable event for the user rather than raw runtime telemetry. |
+| Wisdom set | Curated, versioned institutional knowledge: policies, scrolls, and precedents. |
+| Policy | A binding, scoped rule using must/must-not/requires-approval language. |
+| Scroll | Evidence-backed advisory guidance or pattern using prefer/consider/observed language. |
+| Harvest | Candidate knowledge extracted from campaign consolidation. |
+
+## Lifecycle
+
+```text
+design/simulate → scout → strategy → dispatch → integrate → consolidate → harvest/review
+```
+
+Design is intentionally distinct from dispatch. A campaign cannot advance past a writer workflow merely because a worker settles: it enters `awaiting-integration` until the patch is reviewed, acceptance checks pass, and the resulting commit is recorded.
+
+## Authority and durable state
+
+A future campaign registry may persist campaign intent, immutable revisions, phase/workflow references, approvals, integration commits, and campaign events. It must not replace child workflow authority:
+
+| Concern | Authority |
+| --- | --- |
+| Child tasks/attempts/events | Child workflow SQLite database |
+| Child evidence | Child artifact root |
+| Integrated product behavior | Git plus verification |
+| Campaign intent, gates, integration records | Campaign registry |
+| Presentation | Campaign overview and child boards are non-authoritative views |
+
+Missing, stale, or ambiguous child state blocks the campaign; no UI/pane output may imply completion.
+
+## Model policy
+
+Campaign configuration names roles rather than hard-coding a provider:
+
+```json
+{
+  "models": {
+    "campaign": {"model": "gpt-5.6-sol", "thinking": "adaptive"},
+    "commander": {"model": "gpt-5.6-terra", "thinking": "adaptive"},
+    "executor": {"model": "gpt-5.6-luna", "thinking": "adaptive"}
+  }
+}
+```
+
+- Campaign role: scout synthesis, strategy, cross-workflow risk analysis, consolidation.
+- Commander role: workflow decomposition, gate checking, evidence review, and integration coordination.
+- Executor role: bounded research, implementation, and verification tasks.
+
+Dispatch validates that configured models and thinking modes are available. Adaptive thinking is bounded by campaign policy. Model escalation, a consequential model switch, or a writer retry is recorded; it is never silent. Select roles by ambiguity, coordination cost, and risk—not model prestige.
+
+## Scout and strategy requirements
+
+Every non-trivial campaign begins with a bounded scout stage. Its output records observed facts, assumptions, unknowns, interface boundaries, risks, estimated work, candidate phases, and decisions that require the user. Strategy creates all reviewed child workflow JSON specifications before child dispatch and declares dependencies, resources, model roles, integration owners, acceptance checks, budgets, monitoring cadence, and autonomy boundaries.
+
+## Attention events
+
+Raw telemetry remains in child SQLite/event logs. An attention event is emitted only when the user can act and carries:
+
+```text
+kind: decision | approval | integration | blocked | incident | opportunity
+authority: Git / child SQLite / artifact / external system
+impact: what cannot safely proceed
+options: bounded actions
+recommendation: one proposed action with rationale
+confidence: observed | inferred
+deadline: optional explicit deadline
+```
+
+Events are deduplicated and coalesced, always link to authority, and never notify merely because information exists.
+
+## Wisdom set
+
+The wisdom set is a curated institutional-memory corpus, not unconstrained agent memory. Proposed records are bounded, attributable, scoped, and versioned. They contain provenance, applicability, exclusions, confidence, owner/reviewer, status (`proposed`, `reviewed`, `adopted`, `superseded`, `retired`), review date, and evidence links/hashes. It stores no secrets, raw pane scrollback, or unbounded transcripts.
+
+Instruction precedence is:
+
+```text
+current user instruction > campaign charter > recorded campaign decision
+> adopted scoped policy > workflow contract > scroll/precedent > default guidance
+```
+
+Scouts retrieve only relevant entries. Commanders record overrides. Executors receive a minimal scoped slice. Workers cannot promote their own output to binding policy. Consolidation harvests candidate scrolls; reviewed, repeated, evidence-backed practices may later be promoted to policies. Stale, contradictory, or high-override entries are reviewed or retired.
+
+## Future interface
+
+The initial skill should be `skills/orchorch/SKILL.md`, invoked as `/skill:orchorch`. A plain `/orchorch` alias requires a separate Pi extension and is deferred. A future `campaign watch` overview is display-first; actions remain explicit CLI operations. It shows phase/workflow desired and observed state, freshness, child board/artifact links, gates, integration commits, and next action.
+
+## Acceptance criteria before implementation
+
+- Child SQLite/artifacts remain authoritative and replayable.
+- Every child spec is reviewed/validated before campaign dispatch.
+- Writers are isolated and never auto-integrated or auto-retried.
+- Cross-workflow advancement requires recorded integration evidence.
+- The overview cannot infer completion from panes.
+- Attention events are actionable, bounded, and source-linked.
+- Wisdom retrieval is scoped, attributable, and non-binding unless a reviewed policy applies.
