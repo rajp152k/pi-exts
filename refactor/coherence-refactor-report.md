@@ -65,8 +65,6 @@ Phase 1: runtime invariant reproductions/tests ───┤
 Phase 2: validation + compatibility discipline ←──┘
         ↓
 Phase 3: optional read-only work-state / attention adapter
-        ↓
-Phase 4: demand-proven additions (including any filesystem tool)
 ```
 
 ## Execution plan
@@ -76,7 +74,7 @@ Phase 4: demand-proven additions (including any filesystem tool)
 1. Is task-dispatch a supported local runtime, or explicitly experimental?
 2. What do cancellation, orphan capacity, revision changes, and writer retries mean?
 3. Is attention opt-in/contextual and quiet, or should the current ready popup remain?
-4. Confirm `pi-exts` is not funding a general terminal navigator yet; name a repeated unsolved filesystem job first.
+4. Confirm `pi-exts` remains focused on Pi-facing integrations/workflows rather than a general terminal suite.
 
 ### Phase 0 — legibility, isolated documentation/data change
 
@@ -105,10 +103,6 @@ Add CI only after the existing Python failure is triaged. Separate offline tests
 ### Phase 3 — composition, not a new control plane
 
 Only after Phases 0–2, consider a read-only `/work-state` and a shared, opt-in rate-limited attention adapter. It must label freshness/source, link to authority, never scrape browser DOM/pane content by default, and never claim completion.
-
-### Phase 4 — demand-proven additions
-
-Do not build a filesystem navigator from this plan. If repeated evidence warrants it, prototype the narrow independent flow `inspect → bounded render → reviewed mutation plan → explicit apply`; keep it non-recursive by default, symlink-safe, and non-authoritative.
 
 ## Discovery workflow record
 

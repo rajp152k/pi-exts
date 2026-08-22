@@ -19,8 +19,7 @@ The intended result is a small collection with clear capability boundaries, one 
 - extension, skill, CLI/runtime, artifact, and package boundaries;
 - task-dispatch correctness and observability contracts;
 - documentation, compatibility, validation, and release practices;
-- an incremental path for composing existing capabilities;
-- criteria for accepting or declining future tooling, including filesystem inspection.
+- an incremental path for composing existing capabilities.
 
 ### Explicit non-goals
 
@@ -118,18 +117,6 @@ The collection can become an attractive control-plane project rather than a forc
 
 **Adoption test for new infrastructure:** it should either eliminate a demonstrated safety failure, support a repeated job observed at least several times, or materially reduce a measured cost (time to verified change, rework, blocked time, or missed decision). Otherwise prefer a documented workflow using existing primitives.
 
-### 6. A filesystem tool is a hypothesis, not a product commitment
-
-The proposed `sl` idea has plausible jobs—safe inspection of heterogeneous files, smart rendering, hex/blob views, and planned POSIX operations—but no audit evidence that a general file-manager TUI is the present bottleneck.
-
-**Working recommendation:** defer a navigator product. If a repeated unmet job is documented, explore a standalone CLI and skill:
-
-```text
-inspect → bounded render → reviewed mutation plan → explicit apply
-```
-
-It must be useful outside Pi, non-recursive by default, symlink-safe, explicit about byte/range limits, and not become the authoritative state store.
-
 ## Target architecture
 
 The target is three layers, not a new framework:
@@ -188,11 +175,6 @@ Start with schemas, templates, and contract tests. Extract a shared package only
 - Keep sources labeled and fresh; do not capture pane content or browser DOM by default.
 - Make notifications contextual, coalesced, and linked to an authoritative artifact/board.
 
-### Phase 4 — only demand-proven additions
-
-- Evaluate a filesystem inspect/render/plan/apply primitive against the adoption test.
-- Extract shared code only where schemas have stabilized and two implementations require the same behavior.
-
 ## Engineering operating practices to trial
 
 - **One semantic unit per turn:** investigate, decide, implement one slice, verify, review, or ship—then close with changed artifacts, evidence, uncertainty, and one next move.
@@ -210,7 +192,6 @@ These are experiments, not dogma. Keep what produces better verified outcomes an
 3. Confirm the default: no automatic retry for writers without explicit idempotency and approval.
 4. Confirm that pi-exts remains Pi-facing integrations/workflows, not a general terminal suite.
 5. Choose the desired notification posture: opt-in contextual routing, or a simpler default.
-6. Name a concrete filesystem job that native tools cannot safely satisfy before funding that capability.
 
 ## First implementation proposal
 
