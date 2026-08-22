@@ -2,7 +2,7 @@
 
 ## Status
 
-**First approved slice implemented: pure campaign-contract simulation only.** It validates phase gates, bounded authority delegations, and integration-evidence shape. No campaign registry or ledger tables, dispatch, TUI, attention delivery, wisdom engine, model routing, extension alias, auto-integration, or retries are approved.
+**Phase 1 implemented: pure campaign-contract simulation plus an explicitly selected, separate append-only campaign ledger.** It validates phase gates, bounded authority delegations, and integration-evidence shape; the ledger records immutable plans, phase decisions, child authority observations, integration evidence, and source-linked events. It does not dispatch, schedule, retry, merge, inspect tmux, copy child task/attempt/report/raw-event/lease state, add a TUI, attention delivery, wisdom engine, model routing, extension alias, or auto-integration.
 
 `orchorch` is the proposed higher-order orchestration practice and capability for coordinating multiple durable task-dispatch workflows toward one bounded outcome. It is not a general control plane and must preserve child workflow SQLite databases and artifacts as their respective authorities.
 

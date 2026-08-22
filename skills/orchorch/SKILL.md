@@ -11,7 +11,20 @@ Use `/skill:orchorch` to design a campaign before any child workflow is created 
 skills/pi-task-dispatch/scripts/task-dispatch campaign simulate --file campaign.json
 ```
 
-This slice is **simulation only**. It reads campaign and child workflow JSON and emits a canonical projection; it creates no SQLite state, tmux windows, artifacts, workflows, processes, dispatches, integrations, recordings, or retries.
+`campaign simulate` remains read-only. The approved Phase 1 ledger commands below create records only in an explicitly selected separate SQLite file; they do not dispatch, schedule, retry, merge, or inspect tmux.
+
+## Explicit Phase 1 ledger
+
+Use a dedicated ledger, never a child workflow database:
+
+```bash
+task-dispatch campaign create --ledger /tmp/campaign-ledger.sqlite --file campaign.json
+task-dispatch campaign inspect --ledger /tmp/campaign-ledger.sqlite release-prep
+task-dispatch campaign gate --ledger /tmp/campaign-ledger.sqlite release-prep --phase prepare --gate strategy-review --decision approved --actor user --rationale reviewed
+task-dispatch campaign observe --ledger /tmp/campaign-ledger.sqlite release-prep --phase prepare --workflow child-id --child-database /path/child.sqlite --artifact-root /path/artifacts --revision 1 --sha256 <revision-hash>
+```
+
+`propose-integration`, `approve-integration`, and `record-integration` are separate explicit records. Recording requires a fresh matching child revision/hash, an approved integration gate and proposal, complete commit/verification evidence, and user (or unexpired bounded) authority. `pause`, `resume`, and `consolidate` only append campaign events/records.
 
 ## Campaign schema version 2
 

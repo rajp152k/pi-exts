@@ -21,7 +21,7 @@ import textwrap
 import time
 import uuid
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -4694,6 +4694,567 @@ def command_workflow_watch(args: argparse.Namespace) -> None:
     run_textual_watch(db, args.id, Path(args.root).expanduser(), args.drive)
 
 
+# Campaign ledger ---------------------------------------------------------------
+# This database is deliberately distinct from workflow databases.  It only records
+# campaign decisions and authority locators; it never imports child runtime state.
+def campaign_connect(value: str) -> sqlite3.Connection:
+    path = Path(value).expanduser()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    db = sqlite3.connect(path)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys = ON")
+    db.executescript("""
+    CREATE TABLE IF NOT EXISTS campaigns (id TEXT PRIMARY KEY, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS campaign_revisions (campaign_id TEXT NOT NULL REFERENCES campaigns(id), revision INTEGER NOT NULL, plan TEXT NOT NULL, plan_hash TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(campaign_id,revision), UNIQUE(campaign_id,plan_hash));
+    CREATE TABLE IF NOT EXISTS campaign_phases (campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, phase_id TEXT NOT NULL, intent TEXT NOT NULL, PRIMARY KEY(campaign_id,revision,phase_id));
+    CREATE TABLE IF NOT EXISTS campaign_gates (id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, phase_id TEXT NOT NULL, gate_id TEXT NOT NULL, decision TEXT NOT NULL, actor TEXT NOT NULL, rationale TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS child_authorities (id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, phase_id TEXT NOT NULL, workflow_id TEXT NOT NULL, database_path TEXT NOT NULL, artifact_root TEXT NOT NULL, expected_revision INTEGER NOT NULL, expected_hash TEXT NOT NULL, observed_revision INTEGER, observed_hash TEXT, status TEXT NOT NULL, observed_at TEXT NOT NULL, UNIQUE(campaign_id,revision,phase_id,workflow_id,observed_at));
+    CREATE TABLE IF NOT EXISTS integration_proposals (id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, phase_id TEXT NOT NULL, workflow_id TEXT NOT NULL, writer_id TEXT NOT NULL, base_sha TEXT NOT NULL, owner TEXT NOT NULL, integrator TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS integration_approvals (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id TEXT NOT NULL REFERENCES integration_proposals(id), actor TEXT NOT NULL, delegation TEXT NOT NULL, decision TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS integration_records (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id TEXT NOT NULL REFERENCES integration_proposals(id), resulting_sha TEXT NOT NULL, verification TEXT NOT NULL, recorder TEXT NOT NULL, attestation TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS campaign_events (id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, kind TEXT NOT NULL, source_locator TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS campaign_consolidations (id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, report TEXT NOT NULL, recorder TEXT NOT NULL, created_at TEXT NOT NULL);
+    """)
+    return db
+
+
+def campaign_revision(db: sqlite3.Connection, campaign_id: str) -> int:
+    row = db.execute(
+        "SELECT MAX(revision) AS revision FROM campaign_revisions WHERE campaign_id=?",
+        (campaign_id,),
+    ).fetchone()
+    if not row or row["revision"] is None:
+        fail(f"campaign does not exist: {campaign_id}")
+    return int(row["revision"])
+
+
+def campaign_event(
+    db: sqlite3.Connection,
+    campaign_id: str,
+    kind: str,
+    source: str,
+    detail: dict[str, Any],
+) -> None:
+    db.execute(
+        "INSERT INTO campaign_events(campaign_id,revision,kind,source_locator,detail,created_at) VALUES(?,?,?,?,?,?)",
+        (
+            campaign_id,
+            campaign_revision(db, campaign_id),
+            kind,
+            source,
+            canonical_json(detail),
+            now(),
+        ),
+    )
+
+
+def create_campaign(db: sqlite3.Connection, plan: dict[str, Any]) -> int:
+    # Simulation is the deterministic schema/child-spec validation boundary.
+    if (
+        not isinstance(plan, dict)
+        or not isinstance(plan.get("id"), str)
+        or not RUN_ID.fullmatch(plan["id"])
+    ):
+        fail("campaign plan needs a valid id")
+    campaign_id = plan["id"]
+    if db.execute("SELECT 1 FROM campaigns WHERE id=?", (campaign_id,)).fetchone():
+        fail(f"campaign already exists: {campaign_id}")
+    content = canonical_json(plan)
+    digest = hashlib.sha256(content.encode()).hexdigest()
+    with db:
+        db.execute("INSERT INTO campaigns VALUES(?,?)", (campaign_id, now()))
+        db.execute(
+            "INSERT INTO campaign_revisions VALUES(?,?,?,?,?)",
+            (campaign_id, 1, content, digest, now()),
+        )
+        for phase in plan.get("phases", []):
+            if isinstance(phase, dict) and isinstance(phase.get("id"), str):
+                db.execute(
+                    "INSERT INTO campaign_phases VALUES(?,?,?,?)",
+                    (campaign_id, 1, phase["id"], canonical_json(phase)),
+                )
+        campaign_event(
+            db, campaign_id, "created", f"plan:{digest}", {"planHash": digest}
+        )
+    return 1
+
+
+def record_campaign_gate(
+    db: sqlite3.Connection,
+    campaign_id: str,
+    phase_id: str,
+    gate_id: str,
+    decision: str,
+    actor: str,
+    rationale: str,
+) -> None:
+    if decision not in {"approved", "rejected"} or not actor or not rationale:
+        fail("gate decision needs approved/rejected, actor, and rationale")
+    revision = campaign_revision(db, campaign_id)
+    phase = db.execute(
+        "SELECT intent FROM campaign_phases WHERE campaign_id=? AND revision=? AND phase_id=?",
+        (campaign_id, revision, phase_id),
+    ).fetchone()
+    if not phase:
+        fail(f"unknown campaign phase: {phase_id}")
+    gates = json.loads(phase["intent"]).get("gates", [])
+    if not any(isinstance(gate, dict) and gate.get("id") == gate_id for gate in gates):
+        fail(f"unknown phase gate: {gate_id}")
+    with db:
+        db.execute(
+            "INSERT INTO campaign_gates(campaign_id,revision,phase_id,gate_id,decision,actor,rationale,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (
+                campaign_id,
+                revision,
+                phase_id,
+                gate_id,
+                decision,
+                actor,
+                rationale,
+                now(),
+            ),
+        )
+        campaign_event(
+            db,
+            campaign_id,
+            "gate-decision",
+            f"gate:{phase_id}/{gate_id}",
+            {"decision": decision, "actor": actor},
+        )
+
+
+def observe_campaign_child(
+    db: sqlite3.Connection,
+    campaign_id: str,
+    phase_id: str,
+    workflow_id: str,
+    database_path: str,
+    artifact_root: str,
+    expected_revision: int,
+    expected_hash: str,
+    max_age: int,
+) -> dict[str, Any]:
+    if (
+        expected_revision < 1
+        or not re.fullmatch(r"[0-9a-f]{64}", expected_hash)
+        or max_age < 1
+    ):
+        fail(
+            "child observation needs positive revision/age and a lowercase revision hash"
+        )
+    status, observed_revision, observed_hash = "missing", None, None
+    path = Path(database_path).expanduser()
+    try:
+        # Read-only URI prevents this observation from creating or migrating child state.
+        child = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        child.row_factory = sqlite3.Row
+        row = child.execute(
+            "SELECT revision FROM workflow_current_revisions WHERE workflow_id=?",
+            (workflow_id,),
+        ).fetchone()
+        if not row:
+            status = "missing"
+        else:
+            observed_revision = int(row["revision"])
+            hash_row = child.execute(
+                "SELECT content_hash FROM workflow_revisions WHERE workflow_id=? AND revision=?",
+                (workflow_id, observed_revision),
+            ).fetchone()
+            observed_hash = hash_row["content_hash"] if hash_row else None
+            status = (
+                "fresh"
+                if observed_revision == expected_revision
+                and observed_hash == expected_hash
+                else "revision-mismatch"
+            )
+        child.close()
+    except (OSError, sqlite3.Error):
+        status = "missing"
+    revision = campaign_revision(db, campaign_id)
+    with db:
+        db.execute(
+            "INSERT INTO child_authorities(campaign_id,revision,phase_id,workflow_id,database_path,artifact_root,expected_revision,expected_hash,observed_revision,observed_hash,status,observed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                campaign_id,
+                revision,
+                phase_id,
+                workflow_id,
+                str(path),
+                artifact_root,
+                expected_revision,
+                expected_hash,
+                observed_revision,
+                observed_hash,
+                status,
+                now(),
+            ),
+        )
+        campaign_event(
+            db,
+            campaign_id,
+            "child-observed",
+            f"child-db:{path}#workflow:{workflow_id}",
+            {"status": status, "maxAgeSeconds": max_age},
+        )
+    return {
+        "valid": status == "fresh",
+        "status": status,
+        "revision": observed_revision,
+        "hash": observed_hash,
+    }
+
+
+def valid_campaign_delegation(
+    raw: str | None, actor: str, action: str, campaign_id: str
+) -> bool:
+    if actor == "user":
+        return True
+    try:
+        item = json.loads(raw or "")
+        expiry = datetime.fromisoformat(item["expiresAt"].replace("Z", "+00:00"))
+    except (ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return False
+    return (
+        item.get("grantedBy") == "user"
+        and item.get("authority") == actor
+        and action in item.get("actions", [])
+        and isinstance(item.get("scope"), str)
+        and campaign_id in item["scope"]
+        and expiry > datetime.now(UTC)
+    )
+
+
+def propose_campaign_integration(
+    db: sqlite3.Connection,
+    campaign_id: str,
+    phase_id: str,
+    workflow_id: str,
+    writer_id: str,
+    base_sha: str,
+    owner: str,
+    integrator: str,
+) -> str:
+    if not re.fullmatch(r"[0-9a-f]{40,64}", base_sha) or not all(
+        (phase_id, workflow_id, writer_id, owner, integrator)
+    ):
+        fail("integration proposal needs identifiers, owner/integrator, and base SHA")
+    proposal = uuid.uuid4().hex
+    with db:
+        db.execute(
+            "INSERT INTO integration_proposals VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                proposal,
+                campaign_id,
+                campaign_revision(db, campaign_id),
+                phase_id,
+                workflow_id,
+                writer_id,
+                base_sha,
+                owner,
+                integrator,
+                now(),
+            ),
+        )
+        campaign_event(
+            db,
+            campaign_id,
+            "integration-proposed",
+            f"proposal:{proposal}",
+            {"phase": phase_id, "workflow": workflow_id, "writer": writer_id},
+        )
+    return proposal
+
+
+def approve_campaign_integration(
+    db: sqlite3.Connection, proposal: str, actor: str, delegation: str | None = None
+) -> None:
+    row = db.execute(
+        "SELECT campaign_id FROM integration_proposals WHERE id=?", (proposal,)
+    ).fetchone()
+    if not row or not valid_campaign_delegation(
+        delegation, actor, "integrate", row["campaign_id"]
+    ):
+        fail(
+            "integration approval requires user or an unexpired bounded integrate delegation"
+        )
+    with db:
+        db.execute(
+            "INSERT INTO integration_approvals(proposal_id,actor,delegation,decision,created_at) VALUES(?,?,?,?,?)",
+            (proposal, actor, delegation or "", "approved", now()),
+        )
+        campaign_event(
+            db,
+            row["campaign_id"],
+            "integration-approved",
+            f"proposal:{proposal}",
+            {"actor": actor},
+        )
+
+
+def record_campaign_integration(
+    db: sqlite3.Connection,
+    proposal: str,
+    resulting_sha: str,
+    verification: list[dict[str, Any]],
+    recorder: str,
+    attestation: str,
+    delegation: str | None = None,
+) -> None:
+    row = db.execute(
+        "SELECT * FROM integration_proposals WHERE id=?", (proposal,)
+    ).fetchone()
+    complete = (
+        re.fullmatch(r"[0-9a-f]{40,64}", resulting_sha or "")
+        and bool(verification)
+        and all(
+            isinstance(item, dict)
+            and isinstance(item.get("reference"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", item.get("sha256", ""))
+            and isinstance(item.get("result"), str)
+            for item in verification
+        )
+    )
+    approved = db.execute(
+        "SELECT 1 FROM integration_approvals WHERE proposal_id=? AND decision='approved'",
+        (proposal,),
+    ).fetchone()
+    observation = (
+        db.execute(
+            "SELECT status,observed_at FROM child_authorities WHERE campaign_id=? AND phase_id=? AND workflow_id=? ORDER BY id DESC LIMIT 1",
+            (row["campaign_id"], row["phase_id"], row["workflow_id"]),
+        ).fetchone()
+        if row
+        else None
+    )
+    gate = (
+        db.execute(
+            "SELECT decision FROM campaign_gates WHERE campaign_id=? AND phase_id=? AND gate_id='integrate' ORDER BY id DESC LIMIT 1",
+            (row["campaign_id"], row["phase_id"]),
+        ).fetchone()
+        if row
+        else None
+    )
+    observation_is_fresh = False
+    if observation and observation["status"] == "fresh":
+        try:
+            observation_is_fresh = datetime.now(UTC) - datetime.fromisoformat(
+                observation["observed_at"]
+            ) <= timedelta(seconds=300)
+        except (TypeError, ValueError):
+            observation_is_fresh = False
+    if (
+        not row
+        or not complete
+        or not approved
+        or not observation_is_fresh
+        or not gate
+        or gate["decision"] != "approved"
+        or not attestation
+        or not valid_campaign_delegation(
+            delegation, recorder, "record", row["campaign_id"]
+        )
+    ):
+        fail(
+            "awaiting-integration remains blocked: require fresh matching child authority, approved integration gate/proposal, complete evidence, and authorized recorder"
+        )
+    with db:
+        db.execute(
+            "INSERT INTO integration_records(proposal_id,resulting_sha,verification,recorder,attestation,created_at) VALUES(?,?,?,?,?,?)",
+            (
+                proposal,
+                resulting_sha,
+                canonical_json(verification),
+                recorder,
+                attestation,
+                now(),
+            ),
+        )
+        campaign_event(
+            db,
+            row["campaign_id"],
+            "integration-recorded",
+            f"proposal:{proposal}",
+            {"resultingCommitSha": resulting_sha, "recorder": recorder},
+        )
+
+
+def inspect_campaign(db: sqlite3.Connection, campaign_id: str) -> dict[str, Any]:
+    revision = campaign_revision(db, campaign_id)
+    plan = db.execute(
+        "SELECT plan_hash FROM campaign_revisions WHERE campaign_id=? AND revision=?",
+        (campaign_id, revision),
+    ).fetchone()
+    gates = [
+        dict(row)
+        for row in db.execute(
+            "SELECT phase_id AS phase,gate_id AS gate,decision,actor,rationale,created_at FROM campaign_gates WHERE campaign_id=? AND revision=? ORDER BY id",
+            (campaign_id, revision),
+        )
+    ]
+    children = [
+        dict(row)
+        for row in db.execute(
+            "SELECT phase_id,workflow_id,database_path,artifact_root,expected_revision,expected_hash,observed_revision,observed_hash,status,observed_at FROM child_authorities WHERE campaign_id=? AND revision=? ORDER BY id",
+            (campaign_id, revision),
+        )
+    ]
+    events = [
+        dict(row)
+        for row in db.execute(
+            "SELECT id,kind,source_locator,detail,created_at FROM campaign_events WHERE campaign_id=? AND revision=? ORDER BY id",
+            (campaign_id, revision),
+        )
+    ]
+    return {
+        "id": campaign_id,
+        "revision": revision,
+        "planHash": plan["plan_hash"],
+        "gates": gates,
+        "children": children,
+        "events": events,
+    }
+
+
+def command_campaign_create(args: argparse.Namespace) -> None:
+    plan = json.loads(Path(args.file).read_text(encoding="utf-8"))
+    projection = simulate_campaign(args.file)
+    if not projection["valid"]:
+        print(json.dumps(projection, indent=2, sort_keys=True))
+        raise SystemExit(1)
+    db = campaign_connect(args.ledger)
+    try:
+        print(
+            json.dumps(
+                {"id": plan["id"], "revision": create_campaign(db, plan)},
+                sort_keys=True,
+            )
+        )
+    finally:
+        db.close()
+
+
+def command_campaign_inspect(args: argparse.Namespace) -> None:
+    db = campaign_connect(args.ledger)
+    try:
+        print(json.dumps(inspect_campaign(db, args.id), indent=2, sort_keys=True))
+    finally:
+        db.close()
+
+
+def command_campaign_gate(args: argparse.Namespace) -> None:
+    db = campaign_connect(args.ledger)
+    try:
+        record_campaign_gate(
+            db,
+            args.id,
+            args.phase,
+            args.gate,
+            args.decision,
+            args.actor,
+            args.rationale,
+        )
+    finally:
+        db.close()
+
+
+def command_campaign_observe(args: argparse.Namespace) -> None:
+    db = campaign_connect(args.ledger)
+    try:
+        result = observe_campaign_child(
+            db,
+            args.id,
+            args.phase,
+            args.workflow,
+            args.child_database,
+            args.artifact_root,
+            args.revision,
+            args.sha256,
+            args.max_age,
+        )
+        print(json.dumps(result, sort_keys=True))
+    finally:
+        db.close()
+
+
+def command_campaign_propose(args: argparse.Namespace) -> None:
+    db = campaign_connect(args.ledger)
+    try:
+        proposal = propose_campaign_integration(
+            db,
+            args.id,
+            args.phase,
+            args.workflow,
+            args.writer,
+            args.base_sha,
+            args.owner,
+            args.integrator,
+        )
+        print(json.dumps({"proposal": proposal}, sort_keys=True))
+    finally:
+        db.close()
+
+
+def command_campaign_approve_integration(args: argparse.Namespace) -> None:
+    db = campaign_connect(args.ledger)
+    try:
+        approve_campaign_integration(db, args.proposal, args.actor, args.delegation)
+    finally:
+        db.close()
+
+
+def command_campaign_record_integration(args: argparse.Namespace) -> None:
+    db = campaign_connect(args.ledger)
+    try:
+        verification = json.loads(Path(args.verification).read_text())
+        record_campaign_integration(
+            db,
+            args.proposal,
+            args.resulting_sha,
+            verification,
+            args.recorder,
+            args.attestation,
+            args.delegation,
+        )
+    finally:
+        db.close()
+
+
+def command_campaign_state(args: argparse.Namespace) -> None:
+    db = campaign_connect(args.ledger)
+    try:
+        campaign_event(
+            db, args.id, args.action, f"operator:{args.actor}", {"actor": args.actor}
+        )
+    finally:
+        db.close()
+
+
+def command_campaign_consolidate(args: argparse.Namespace) -> None:
+    db = campaign_connect(args.ledger)
+    try:
+        report = json.loads(Path(args.report).read_text())
+        with db:
+            db.execute(
+                "INSERT INTO campaign_consolidations(campaign_id,revision,report,recorder,created_at) VALUES(?,?,?,?,?)",
+                (
+                    args.id,
+                    campaign_revision(db, args.id),
+                    canonical_json(report),
+                    args.recorder,
+                    now(),
+                ),
+            )
+            campaign_event(
+                db,
+                args.id,
+                "consolidated",
+                f"report:{args.report}",
+                {"recorder": args.recorder},
+            )
+    finally:
+        db.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -4734,13 +5295,100 @@ def build_parser() -> argparse.ArgumentParser:
     worker = commands.add_parser("worker", help=argparse.SUPPRESS)
     worker.add_argument("--run-dir", required=True)
     worker.set_defaults(handler=command_worker)
-    campaign = commands.add_parser("campaign", help="pure campaign design commands")
+    campaign = commands.add_parser(
+        "campaign", help="explicit campaign design and ledger commands"
+    )
     campaign_commands = campaign.add_subparsers(dest="campaign_command", required=True)
     simulate = campaign_commands.add_parser(
         "simulate", help="validate and project a campaign without runtime side effects"
     )
     simulate.add_argument("--file", required=True)
     simulate.set_defaults(handler=command_campaign_simulate)
+    create_campaign_parser = campaign_commands.add_parser(
+        "create", help="create an explicitly selected campaign ledger record"
+    )
+    create_campaign_parser.add_argument("--ledger", required=True)
+    create_campaign_parser.add_argument("--file", required=True)
+    create_campaign_parser.set_defaults(handler=command_campaign_create)
+    inspect_campaign_parser = campaign_commands.add_parser(
+        "inspect", help="inspect append-only campaign ledger records"
+    )
+    inspect_campaign_parser.add_argument("--ledger", required=True)
+    inspect_campaign_parser.add_argument("id")
+    inspect_campaign_parser.set_defaults(handler=command_campaign_inspect)
+    gate_campaign_parser = campaign_commands.add_parser(
+        "gate", help="record an explicit phase gate decision"
+    )
+    gate_campaign_parser.add_argument("--ledger", required=True)
+    gate_campaign_parser.add_argument("id")
+    gate_campaign_parser.add_argument("--phase", required=True)
+    gate_campaign_parser.add_argument("--gate", required=True)
+    gate_campaign_parser.add_argument(
+        "--decision", choices=("approved", "rejected"), required=True
+    )
+    gate_campaign_parser.add_argument("--actor", required=True)
+    gate_campaign_parser.add_argument("--rationale", required=True)
+    gate_campaign_parser.set_defaults(handler=command_campaign_gate)
+    observe = campaign_commands.add_parser(
+        "observe", help="read a child workflow authority without copying its state"
+    )
+    observe.add_argument("--ledger", required=True)
+    observe.add_argument("id")
+    observe.add_argument("--phase", required=True)
+    observe.add_argument("--workflow", required=True)
+    observe.add_argument("--child-database", required=True)
+    observe.add_argument("--artifact-root", required=True)
+    observe.add_argument("--revision", type=int, required=True)
+    observe.add_argument("--sha256", required=True)
+    observe.add_argument("--max-age", type=int, default=300)
+    observe.set_defaults(handler=command_campaign_observe)
+    propose = campaign_commands.add_parser(
+        "propose-integration", help="record, but do not apply, an integration proposal"
+    )
+    propose.add_argument("--ledger", required=True)
+    propose.add_argument("id")
+    propose.add_argument("--phase", required=True)
+    propose.add_argument("--workflow", required=True)
+    propose.add_argument("--writer", required=True)
+    propose.add_argument("--base-sha", required=True)
+    propose.add_argument("--owner", required=True)
+    propose.add_argument("--integrator", required=True)
+    propose.set_defaults(handler=command_campaign_propose)
+    approve_integration = campaign_commands.add_parser(
+        "approve-integration", help="record approval for one integration proposal"
+    )
+    approve_integration.add_argument("--ledger", required=True)
+    approve_integration.add_argument("--proposal", required=True)
+    approve_integration.add_argument("--actor", required=True)
+    approve_integration.add_argument("--delegation")
+    approve_integration.set_defaults(handler=command_campaign_approve_integration)
+    record_integration = campaign_commands.add_parser(
+        "record-integration", help="record externally applied integration evidence"
+    )
+    record_integration.add_argument("--ledger", required=True)
+    record_integration.add_argument("--proposal", required=True)
+    record_integration.add_argument("--resulting-sha", required=True)
+    record_integration.add_argument("--verification", required=True)
+    record_integration.add_argument("--recorder", required=True)
+    record_integration.add_argument("--attestation", required=True)
+    record_integration.add_argument("--delegation")
+    record_integration.set_defaults(handler=command_campaign_record_integration)
+    for action in ("pause", "resume"):
+        state = campaign_commands.add_parser(
+            action, help=f"record explicit campaign {action}"
+        )
+        state.add_argument("--ledger", required=True)
+        state.add_argument("id")
+        state.add_argument("--actor", required=True)
+        state.set_defaults(handler=command_campaign_state, action=action)
+    consolidate = campaign_commands.add_parser(
+        "consolidate", help="record a terminal campaign consolidation"
+    )
+    consolidate.add_argument("--ledger", required=True)
+    consolidate.add_argument("id")
+    consolidate.add_argument("--report", required=True)
+    consolidate.add_argument("--recorder", required=True)
+    consolidate.set_defaults(handler=command_campaign_consolidate)
     workflow = commands.add_parser(
         "workflow", help="create, schedule, and observe workflows"
     )

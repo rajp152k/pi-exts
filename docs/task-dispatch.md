@@ -159,6 +159,17 @@ timestamp, type, task/attempt IDs, and decoded detail. `workflow export` emits
 a stable read model with task state/phase, dependencies, attempts, resources,
 retries, blockers, and deferrals. Both are observation-only and never dispatch.
 
+## Campaign ledger (explicit, no dispatch)
+
+Campaign intent is stored only when an operator names a separate ledger file; it never uses `--database` or alters a child workflow database:
+
+```bash
+task-dispatch campaign create --ledger /tmp/release-ledger.sqlite --file campaign.json
+task-dispatch campaign inspect --ledger /tmp/release-ledger.sqlite release-prep
+```
+
+Use explicit `campaign gate`, `observe`, `propose-integration`, `approve-integration`, `record-integration`, `pause`, `resume`, and `consolidate` operations. Observation opens the named child SQLite authority read-only and fails closed for missing or revision/hash-mismatched authority. Recording integration requires fresh matching authority, approved phase/proposal decisions, complete Git commit and verification evidence, recorder attestation, and user or bounded delegated authority. These commands never start a child workflow, retry work, merge/apply a patch, infer state from tmux, or copy child runtime records.
+
 ## Opt-in real smoke test
 
 The default Python suite uses a fake JSONL RPC command and requires neither Pi
