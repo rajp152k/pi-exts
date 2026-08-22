@@ -1233,8 +1233,9 @@ def validate_workflow_spec(spec: Any) -> list[dict[str, Any]]:
 validate_spec = validate_workflow_spec
 
 
-CAMPAIGN_SCHEMA_VERSION = 1
-PROTECTED_CAMPAIGN_ACTIONS = {"dispatch", "integrate", "record"}
+CAMPAIGN_SCHEMA_VERSION = 2
+CAMPAIGN_ACTIONS = {"dispatch", "integrate", "record", "writer-retry"}
+CAMPAIGN_GATE_DECISIONS = {"advance", "integrate"}
 
 
 def canonical_json(value: Any) -> str:
@@ -1346,23 +1347,52 @@ def simulate_campaign(path: str) -> dict[str, Any]:
             )
             depends_on = []
         gates = phase.get("gates")
-        if (
-            not isinstance(gates, list)
-            or not gates
-            or not all(isinstance(gate, str) and gate.strip() for gate in gates)
-        ):
+        valid_gates: list[dict[str, str]] = []
+        if not isinstance(gates, list) or not gates:
             findings.append(
                 campaign_finding(
                     "missing-phase-gates",
                     f"phase {phase_id} needs non-empty gates",
-                    "Declare one or more explicit approval gate ids.",
+                    "Declare phase-level advancement or integration decision gates.",
                 )
             )
-            gates = []
         else:
-            approvals.extend(
-                {"phase": phase_id, "gate": gate, "approver": "user"} for gate in gates
-            )
+            gate_ids: set[str] = set()
+            for gate in gates:
+                if (
+                    not isinstance(gate, dict)
+                    or not isinstance(gate.get("id"), str)
+                    or not gate["id"].strip()
+                    or gate.get("decision") not in CAMPAIGN_GATE_DECISIONS
+                ):
+                    findings.append(
+                        campaign_finding(
+                            "invalid-phase-gate",
+                            f"phase {phase_id} gate must have an id and decision of advance or integrate",
+                            'Use {"id": "...", "decision": "advance"|"integrate"}.',
+                        )
+                    )
+                    continue
+                if gate["id"] in gate_ids:
+                    findings.append(
+                        campaign_finding(
+                            "duplicate-phase-gate",
+                            f"phase {phase_id} duplicates gate {gate['id']!r}",
+                            "Give every phase gate a unique id.",
+                        )
+                    )
+                    continue
+                gate_ids.add(gate["id"])
+                valid_gates.append({"id": gate["id"], "decision": gate["decision"]})
+                approvals.append(
+                    {
+                        "phase": phase_id,
+                        "gate": gate["id"],
+                        "decision": gate["decision"],
+                        "approver": "user",
+                    }
+                )
+        gates = valid_gates
         declarations = phase.get("childSpecs")
         if not isinstance(declarations, list) or not declarations:
             findings.append(
@@ -1489,6 +1519,51 @@ def simulate_campaign(path: str) -> dict[str, Any]:
                         )
                     )
                     continue
+                evidence = integration.get("evidence")
+                verification = (
+                    evidence.get("verification") if isinstance(evidence, dict) else None
+                )
+                if (
+                    not isinstance(evidence, dict)
+                    or not all(
+                        isinstance(evidence.get(key), str) and evidence[key].strip()
+                        for key in (
+                            "baseSha",
+                            "resultingCommitSha",
+                            "integrator",
+                            "recordedAt",
+                        )
+                    )
+                    or not all(
+                        isinstance(evidence.get(key), str)
+                        and re.fullmatch(r"[0-9a-f]{40,64}", evidence[key])
+                        for key in ("baseSha", "resultingCommitSha")
+                    )
+                    or not isinstance(verification, list)
+                    or not verification
+                    or not all(
+                        isinstance(item, dict)
+                        and all(
+                            isinstance(item.get(key), str) and item[key].strip()
+                            for key in ("reference", "sha256", "result")
+                        )
+                        and re.fullmatch(r"[0-9a-f]{64}", item["sha256"])
+                        for item in verification
+                    )
+                    or not re.fullmatch(
+                        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})",
+                        evidence.get("recordedAt", "")
+                        if isinstance(evidence, dict)
+                        else "",
+                    )
+                ):
+                    findings.append(
+                        campaign_finding(
+                            "invalid-integration-evidence",
+                            f"writer {integration['writer']!r} in {ref!r} lacks complete integration evidence",
+                            "Require baseSha, resultingCommitSha, verification reference/sha256/result, integrator, and recordedAt.",
+                        )
+                    )
                 writer = integration["writer"]
                 if writer in declared_writers:
                     findings.append(
@@ -1526,12 +1601,25 @@ def simulate_campaign(path: str) -> dict[str, Any]:
                 }
             )
             phase_children.append(ref)
+        if any(
+            isinstance(declaration, dict)
+            and isinstance(declaration.get("integrations"), list)
+            and declaration["integrations"]
+            for declaration in declarations
+        ) and not any(gate["decision"] == "integrate" for gate in gates):
+            findings.append(
+                campaign_finding(
+                    "missing-integration-phase-gate",
+                    f"phase {phase_id} contains writers but has no integration decision gate",
+                    "Add a phase gate with decision: integrate.",
+                )
+            )
         predicted.append(
             {
                 "id": phase_id,
                 "dependsOn": sorted(depends_on),
                 "childSpecs": sorted(phase_children),
-                "gates": sorted(gates),
+                "gates": sorted(gates, key=lambda gate: (gate["decision"], gate["id"])),
             }
         )
     phase_order = {phase_id: index for index, phase_id in enumerate(phase_by_id)}
@@ -1597,33 +1685,45 @@ def simulate_campaign(path: str) -> dict[str, Any]:
         )
     else:
         for delegation in delegations:
-            if (
-                not isinstance(delegation, dict)
-                or not all(
+            valid = (
+                isinstance(delegation, dict)
+                and delegation.get("grantedBy") == "user"
+                and all(
                     isinstance(delegation.get(key), str) and delegation[key].strip()
-                    for key in ("authority", "scope")
+                    for key in ("authority", "scope", "expiresAt")
                 )
-                or not isinstance(delegation.get("actions"), list)
-                or not all(
-                    isinstance(action, str) and action.strip()
-                    for action in delegation.get("actions", [])
+                and isinstance(delegation.get("actions"), list)
+                and bool(delegation["actions"])
+                and all(action in CAMPAIGN_ACTIONS for action in delegation["actions"])
+                and re.fullmatch(
+                    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})",
+                    delegation.get("expiresAt", "")
+                    if isinstance(delegation, dict)
+                    else "",
                 )
-            ):
+            )
+            if not valid:
                 findings.append(
                     campaign_finding(
                         "invalid-delegation",
-                        "delegation needs authority, scope, and actions",
-                        "Declare a bounded explicit delegation.",
+                        "delegation needs user grant, named authority, actions, scope, and ISO-8601 expiry",
+                        "Set grantedBy: user; name authority, actions, bounded scope, and expiresAt.",
                     )
                 )
                 continue
-            protected = set(delegation["actions"]) & PROTECTED_CAMPAIGN_ACTIONS
-            if protected:
+            if "writer-retry" in delegation["actions"] and not (
+                isinstance(delegation.get("attemptId"), str)
+                and delegation["attemptId"].strip()
+                and isinstance(delegation.get("workflowRevision"), int)
+                and delegation["workflowRevision"] > 0
+                and isinstance(delegation.get("idempotency"), bool)
+                and delegation["idempotency"]
+            ):
                 findings.append(
                     campaign_finding(
-                        "delegated-protected-action",
-                        f"delegation cannot include protected actions {sorted(protected)}",
-                        "Keep dispatch, integrate, and record with the user.",
+                        "invalid-writer-retry-delegation",
+                        "writer-retry delegation must bind one attempt, one workflow revision, and idempotency: true",
+                        "Set attemptId, workflowRevision, and idempotency: true for writer-retry.",
                     )
                 )
     return {

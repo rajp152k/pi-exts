@@ -2,7 +2,7 @@
 
 ## Status
 
-**First approved slice implemented: pure campaign simulation only.** No campaign registry, dispatch, TUI, attention delivery, wisdom engine, model routing, extension alias, auto-integration, or retries are approved.
+**First approved slice implemented: pure campaign-contract simulation only.** It validates phase gates, bounded authority delegations, and integration-evidence shape. No campaign registry or ledger tables, dispatch, TUI, attention delivery, wisdom engine, model routing, extension alias, auto-integration, or retries are approved.
 
 `orchorch` is the proposed higher-order orchestration practice and capability for coordinating multiple durable task-dispatch workflows toward one bounded outcome. It is not a general control plane and must preserve child workflow SQLite databases and artifacts as their respective authorities.
 
@@ -27,7 +27,7 @@
 
 ## Approved first slice
 
-`campaign simulate --file campaign.json` is a read-only design check. It validates versioned campaign JSON, ordered acyclic phases, unique child references and hashes, existing child-workflow validation findings, phase gates, and an explicit integration owner/checkpoint for every writer. Its canonical output contains predicted phases, hashes, findings, and required approvals. It creates no SQLite, tmux, artifacts, child workflows, processes, or dispatches.
+`campaign simulate --file campaign.json` is a read-only contract check. It validates versioned campaign JSON, ordered acyclic phases, unique child references and hashes, existing child-workflow validation findings, phase-level advancement/integration gates, explicit bounded delegations, and one explicit integration declaration with complete evidence for every writer. Required integration evidence is base SHA, resulting commit SHA, verification references/hashes/results, owner, integrator, and timestamp. Its canonical output contains predicted phases, hashes, findings, and required approvals. It creates no SQLite, tmux, artifacts, child workflows, processes, dispatches, integrations, commits, or records.
 
 Integration follows the approved lifecycle:
 
@@ -35,7 +35,7 @@ Integration follows the approved lifecycle:
 preparer → authority → integrator → recorder
 ```
 
-User approval is the default. Delegation is permitted only when its authority, actions, and scope are explicit and bounded. Dispatch, integration, and recording are protected, nondelegable actions. Writer patches are never auto-integrated or auto-retried.
+User approval is the default. Delegation is permitted only when it is granted by the user and names its authority, actions, bounded scope, and expiry; it cannot be implicit or re-delegated. Explicit delegations may authorize dispatch, integration, recording, or writer retry. A writer-retry delegation additionally binds one exact attempt and workflow revision and declares idempotency. Writer patches are never auto-integrated or auto-retried.
 
 ## Lifecycle
 
@@ -43,7 +43,7 @@ User approval is the default. Delegation is permitted only when its authority, a
 design/simulate → scout → strategy → dispatch → integrate → consolidate → harvest/review
 ```
 
-Design is intentionally distinct from dispatch. A campaign cannot advance past a writer workflow merely because a worker settles: it enters `awaiting-integration` until the patch is reviewed, acceptance checks pass, and the resulting commit is recorded.
+Design is intentionally distinct from dispatch. A campaign cannot advance past a writer workflow merely because a worker settles: it enters `awaiting-integration`. It becomes eligible only after an approved integration, Git commit, and recorded verification evidence. Campaign gates are phase-level advancement/integration decisions; workflow task gates retain their existing child-workflow readiness meaning.
 
 ## Authority and durable state
 

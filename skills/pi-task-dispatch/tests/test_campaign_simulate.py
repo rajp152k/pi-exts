@@ -61,17 +61,17 @@ class CampaignSimulateTests(unittest.TestCase):
         child: Path,
         digest: str,
         *,
-        integrations: list[dict[str, str]] | None = None,
+        integrations: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         return {
-            "schemaVersion": 1,
+            "schemaVersion": 2,
             "id": "fixture",
             "approvals": {"default": "user", "delegations": []},
             "phases": [
                 {
                     "id": "prepare",
                     "dependsOn": [],
-                    "gates": ["review"],
+                    "gates": [{"id": "review", "decision": "advance"}],
                     "childSpecs": [
                         {
                             "ref": child.name,
@@ -81,6 +81,27 @@ class CampaignSimulateTests(unittest.TestCase):
                     ],
                 }
             ],
+        }
+
+    @staticmethod
+    def integration() -> dict[str, Any]:
+        return {
+            "writer": "write-result",
+            "owner": "maintainer",
+            "checkpoint": "prepare-integration",
+            "evidence": {
+                "baseSha": "a" * 40,
+                "resultingCommitSha": "b" * 40,
+                "verification": [
+                    {
+                        "reference": "ci://fixture/1",
+                        "sha256": "c" * 64,
+                        "result": "passed",
+                    }
+                ],
+                "integrator": "maintainer",
+                "recordedAt": "2026-01-01T00:00:00Z",
+            },
         }
 
     @staticmethod
@@ -171,6 +192,66 @@ class CampaignSimulateTests(unittest.TestCase):
                 for item in self.dispatcher.simulate_campaign(str(path))["findings"]
             }
         self.assertIn("missing-writer-integration", codes)
+
+    def test_writer_integration_requires_evidence_and_integration_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            child = root / "writer.json"
+            digest = self.write_json(child, self.workflow(writer=True))
+            campaign = self.campaign(child, digest, integrations=[self.integration()])
+            path = root / "campaign.json"
+            self.write_json(path, campaign)
+            codes = {
+                item["code"]
+                for item in self.dispatcher.simulate_campaign(str(path))["findings"]
+            }
+            self.assertIn("missing-integration-phase-gate", codes)
+            campaign["phases"][0]["gates"].append(
+                {"id": "prepare-integration", "decision": "integrate"}
+            )
+            campaign["phases"][0]["childSpecs"][0]["integrations"][0]["evidence"].pop(
+                "resultingCommitSha"
+            )
+            self.write_json(path, campaign)
+            codes = {
+                item["code"]
+                for item in self.dispatcher.simulate_campaign(str(path))["findings"]
+            }
+        self.assertIn("invalid-integration-evidence", codes)
+
+    def test_delegations_are_explicit_and_writer_retry_is_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            child = root / "child.json"
+            digest = self.write_json(child, self.workflow())
+            campaign = self.campaign(child, digest)
+            campaign["approvals"]["delegations"] = [
+                {
+                    "grantedBy": "maintainer",
+                    "authority": "integrator",
+                    "actions": ["writer-retry"],
+                    "scope": "prepare",
+                    "expiresAt": "2026-01-01T00:00:00Z",
+                }
+            ]
+            path = root / "campaign.json"
+            self.write_json(path, campaign)
+            codes = {
+                item["code"]
+                for item in self.dispatcher.simulate_campaign(str(path))["findings"]
+            }
+            self.assertIn("invalid-delegation", codes)
+            campaign["approvals"]["delegations"][0].update(
+                {
+                    "grantedBy": "user",
+                    "attemptId": "attempt-7",
+                    "workflowRevision": 3,
+                    "idempotency": True,
+                }
+            )
+            self.write_json(path, campaign)
+            projection = self.dispatcher.simulate_campaign(str(path))
+        self.assertTrue(projection["valid"], projection)
 
     def test_simulation_creates_no_runtime_side_effects(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
