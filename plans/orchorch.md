@@ -2,7 +2,7 @@
 
 ## Status
 
-**Phase 1 implemented: pure campaign-contract simulation plus an explicitly selected, separate append-only campaign ledger.** It validates phase gates, bounded authority delegations, and integration-evidence shape; the ledger records immutable plans, phase decisions, child authority observations, integration evidence, and source-linked events. It does not dispatch, schedule, retry, merge, inspect tmux, copy child task/attempt/report/raw-event/lease state, add a TUI, attention delivery, wisdom engine, model routing, extension alias, or auto-integration.
+**Phase 1 and the display-only overview are implemented:** pure campaign-contract simulation, an explicitly selected separate append-only campaign ledger, and a one-shot `campaign status`/`campaign watch` projection. The overview reads ledger references and child SQLite authority read-only, labels missing/stale/mismatched authority as blocking, and never dispatches, schedules, retries, merges, inspects tmux, copies child runtime records, or claims completion.
 
 `orchorch` is the proposed higher-order orchestration practice and capability for coordinating multiple durable task-dispatch workflows toward one bounded outcome. It is not a general control plane and must preserve child workflow SQLite databases and artifacts as their respective authorities.
 
@@ -112,9 +112,9 @@ current user instruction > campaign charter > recorded campaign decision
 
 Scouts retrieve only relevant entries. Commanders record overrides. Executors receive a minimal scoped slice. Workers cannot promote their own output to binding policy. Consolidation harvests candidate scrolls; reviewed, repeated, evidence-backed practices may later be promoted to policies. Stale, contradictory, or high-override entries are reviewed or retired.
 
-## Future interface
+## Interface
 
-The initial skill should be `skills/orchorch/SKILL.md`, invoked as `/skill:orchorch`. A plain `/orchorch` alias requires a separate Pi extension and is deferred. A future `campaign watch` overview is display-first; actions remain explicit CLI operations. It shows phase/workflow desired and observed state, freshness, child board/artifact links, gates, integration commits, and next action.
+The initial skill is `skills/orchorch/SKILL.md`, invoked as `/skill:orchorch`. A plain `/orchorch` alias requires a separate Pi extension and remains deferred. `campaign status` and `campaign watch` are display-first, one-shot JSON projections; actions remain explicit CLI operations.
 
 ## Non-negotiable constraints
 
@@ -158,9 +158,9 @@ Add narrow explicit commands to create, inspect, approve/reject gates, observe c
 
 Default authority is the user. Delegation is valid only when it names an authority, allowed actions, bounded campaign/phase/workflow/path scope, expiry, required checks, and revocation condition. It is not transitive. Delegated writer retries additionally require the exact failed attempt, pinned revision, and declared idempotency.
 
-### 3. Display-only campaign overview
+### 3. Display-only campaign overview — implemented
 
-After ledger authority is proven, add `campaign watch`: a display-first TUI showing campaign phase desired/observed state, freshness, child board/artifact links, gates, integration state/commit, incidents, and next action. It reads the ledger and child authorities; it cannot schedule, retry, integrate, or make a completion claim.
+`campaign status` and its `campaign watch` alias emit a one-shot display-only overview from the selected ledger and its child authority locators. It shows declared/observed phase state, freshness, child board/artifact links, gates, integration state/commit, recorded incidents, and a conservative next action. The projection reads child SQLite with a read-only URI, does not refresh observations, and labels missing, stale, unreadable, or revision/hash-mismatched authority as blocking. It cannot schedule, retry, integrate, or make a completion claim.
 
 ### 4. Campaign consolidation
 

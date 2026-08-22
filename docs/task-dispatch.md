@@ -170,6 +170,16 @@ task-dispatch campaign inspect --ledger /tmp/release-ledger.sqlite release-prep
 
 Use explicit `campaign gate`, `observe`, `propose-integration`, `approve-integration`, `record-integration`, `pause`, `resume`, and `consolidate` operations. Observation opens the named child SQLite authority read-only and fails closed for missing or revision/hash-mismatched authority. Recording integration requires fresh matching authority, approved phase/proposal decisions, complete Git commit and verification evidence, recorder attestation, and user or bounded delegated authority. These commands never start a child workflow, retry work, merge/apply a patch, infer state from tmux, or copy child runtime records.
 
+### Display-only campaign overview
+
+```bash
+task-dispatch campaign status --ledger /tmp/release-ledger.sqlite release-prep
+# `watch` is an alias for the same one-shot, display-only JSON overview.
+task-dispatch campaign watch --ledger /tmp/release-ledger.sqlite release-prep
+```
+
+The overview reads the ledger plus its child authority locators without writing either database. It shows each declared phase, authoritative child workflow state, observation freshness, board (`workflow watch --no-drive`) and artifact links, gate decisions, integration proposal/commit evidence, recorded incidents, and a conservative next action. A missing observation, stale observation, unreadable child database, or revision/hash mismatch is explicitly labeled **BLOCKED**; it makes no completion or advancement claim and cannot schedule, retry, integrate, or refresh an observation.
+
 ## Opt-in real smoke test
 
 The default Python suite uses a fake JSONL RPC command and requires neither Pi

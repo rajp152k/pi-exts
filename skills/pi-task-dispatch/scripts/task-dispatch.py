@@ -35,6 +35,7 @@ SCHEDULER_LEASE_SECONDS = 300.0
 RUN_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,47}$")
 TERMINAL_STATES = {"completed", "failed", "cancelled", "lost"}
 RETRY_OUTCOMES = {"transport", "provider", "timeout", "lost"}
+CAMPAIGN_AUTHORITY_MAX_AGE_SECONDS = 300
 
 
 def policy_clock() -> float:
@@ -4708,13 +4709,31 @@ def campaign_connect(value: str) -> sqlite3.Connection:
     CREATE TABLE IF NOT EXISTS campaign_revisions (campaign_id TEXT NOT NULL REFERENCES campaigns(id), revision INTEGER NOT NULL, plan TEXT NOT NULL, plan_hash TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(campaign_id,revision), UNIQUE(campaign_id,plan_hash));
     CREATE TABLE IF NOT EXISTS campaign_phases (campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, phase_id TEXT NOT NULL, intent TEXT NOT NULL, PRIMARY KEY(campaign_id,revision,phase_id));
     CREATE TABLE IF NOT EXISTS campaign_gates (id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, phase_id TEXT NOT NULL, gate_id TEXT NOT NULL, decision TEXT NOT NULL, actor TEXT NOT NULL, rationale TEXT NOT NULL, created_at TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS child_authorities (id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, phase_id TEXT NOT NULL, workflow_id TEXT NOT NULL, database_path TEXT NOT NULL, artifact_root TEXT NOT NULL, expected_revision INTEGER NOT NULL, expected_hash TEXT NOT NULL, observed_revision INTEGER, observed_hash TEXT, status TEXT NOT NULL, observed_at TEXT NOT NULL, UNIQUE(campaign_id,revision,phase_id,workflow_id,observed_at));
+    CREATE TABLE IF NOT EXISTS child_authorities (id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, phase_id TEXT NOT NULL, workflow_id TEXT NOT NULL, database_path TEXT NOT NULL, artifact_root TEXT NOT NULL, expected_revision INTEGER NOT NULL, expected_hash TEXT NOT NULL, observed_revision INTEGER, observed_hash TEXT, status TEXT NOT NULL, observed_at TEXT NOT NULL, max_age_seconds INTEGER NOT NULL DEFAULT 300, UNIQUE(campaign_id,revision,phase_id,workflow_id,observed_at));
     CREATE TABLE IF NOT EXISTS integration_proposals (id TEXT PRIMARY KEY, campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, phase_id TEXT NOT NULL, workflow_id TEXT NOT NULL, writer_id TEXT NOT NULL, base_sha TEXT NOT NULL, owner TEXT NOT NULL, integrator TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS integration_approvals (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id TEXT NOT NULL REFERENCES integration_proposals(id), actor TEXT NOT NULL, delegation TEXT NOT NULL, decision TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS integration_records (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id TEXT NOT NULL REFERENCES integration_proposals(id), resulting_sha TEXT NOT NULL, verification TEXT NOT NULL, recorder TEXT NOT NULL, attestation TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS campaign_events (id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, kind TEXT NOT NULL, source_locator TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS campaign_consolidations (id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, report TEXT NOT NULL, recorder TEXT NOT NULL, created_at TEXT NOT NULL);
     """)
+    # Existing append-only ledgers predate the observation freshness bound.  A
+    # default preserves their recorded references without rewriting any rows.
+    columns = {row[1] for row in db.execute("PRAGMA table_info(child_authorities)")}
+    if "max_age_seconds" not in columns:
+        db.execute(
+            "ALTER TABLE child_authorities ADD COLUMN max_age_seconds INTEGER NOT NULL DEFAULT 300"
+        )
+    return db
+
+
+def campaign_readonly_connect(value: str) -> sqlite3.Connection:
+    """Open an existing ledger without schema setup or any write capability."""
+    path = Path(value).expanduser()
+    try:
+        db = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error as error:
+        fail(f"cannot open campaign ledger read-only: {error}")
+    db.row_factory = sqlite3.Row
     return db
 
 
@@ -4873,7 +4892,7 @@ def observe_campaign_child(
     revision = campaign_revision(db, campaign_id)
     with db:
         db.execute(
-            "INSERT INTO child_authorities(campaign_id,revision,phase_id,workflow_id,database_path,artifact_root,expected_revision,expected_hash,observed_revision,observed_hash,status,observed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO child_authorities(campaign_id,revision,phase_id,workflow_id,database_path,artifact_root,expected_revision,expected_hash,observed_revision,observed_hash,status,observed_at,max_age_seconds) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 campaign_id,
                 revision,
@@ -4887,6 +4906,7 @@ def observe_campaign_child(
                 observed_hash,
                 status,
                 now(),
+                max_age,
             ),
         )
         campaign_event(
@@ -5094,7 +5114,7 @@ def inspect_campaign(db: sqlite3.Connection, campaign_id: str) -> dict[str, Any]
     children = [
         dict(row)
         for row in db.execute(
-            "SELECT phase_id,workflow_id,database_path,artifact_root,expected_revision,expected_hash,observed_revision,observed_hash,status,observed_at FROM child_authorities WHERE campaign_id=? AND revision=? ORDER BY id",
+            "SELECT phase_id,workflow_id,database_path,artifact_root,expected_revision,expected_hash,observed_revision,observed_hash,status,observed_at,max_age_seconds FROM child_authorities WHERE campaign_id=? AND revision=? ORDER BY id",
             (campaign_id, revision),
         )
     ]
@@ -5113,6 +5133,234 @@ def inspect_campaign(db: sqlite3.Connection, campaign_id: str) -> dict[str, Any]
         "children": children,
         "events": events,
     }
+
+
+def campaign_authority_snapshot(
+    authority: dict[str, Any], *, reference_time: datetime
+) -> dict[str, Any]:
+    """Read one child authority without creating, migrating, or refreshing it."""
+    observed_at = authority["observed_at"]
+    max_age = int(
+        authority.get("max_age_seconds") or CAMPAIGN_AUTHORITY_MAX_AGE_SECONDS
+    )
+    try:
+        age_seconds = max(
+            0,
+            int((reference_time - datetime.fromisoformat(observed_at)).total_seconds()),
+        )
+    except (TypeError, ValueError):
+        age_seconds = max_age + 1
+    status = authority["status"]
+    observed_revision = authority["observed_revision"]
+    observed_hash = authority["observed_hash"]
+    workflow_state = None
+    try:
+        # The URI is deliberately read-only: overview must not become an observer
+        # that changes a child authority or manufactures its database.
+        child = sqlite3.connect(
+            f"file:{Path(authority['database_path']).expanduser()}?mode=ro", uri=True
+        )
+        child.row_factory = sqlite3.Row
+        current = child.execute(
+            "SELECT revision FROM workflow_current_revisions WHERE workflow_id=?",
+            (authority["workflow_id"],),
+        ).fetchone()
+        if not current:
+            status = "missing"
+        else:
+            observed_revision = int(current["revision"])
+            revision = child.execute(
+                "SELECT content_hash FROM workflow_revisions WHERE workflow_id=? AND revision=?",
+                (authority["workflow_id"], observed_revision),
+            ).fetchone()
+            observed_hash = revision["content_hash"] if revision else None
+            state = child.execute(
+                "SELECT state FROM workflows WHERE id=?", (authority["workflow_id"],)
+            ).fetchone()
+            workflow_state = state["state"] if state else None
+            if (
+                observed_revision != authority["expected_revision"]
+                or observed_hash != authority["expected_hash"]
+            ):
+                status = "revision-mismatch"
+            elif status == "fresh":
+                status = "fresh"
+        child.close()
+    except (OSError, sqlite3.Error):
+        status = "missing"
+    if status == "fresh" and age_seconds > max_age:
+        status = "stale"
+    blocked = status != "fresh"
+    return {
+        "workflow": authority["workflow_id"],
+        "status": status,
+        "blocked": blocked,
+        "label": "BLOCKED: authority " + status if blocked else "authority fresh",
+        "freshness": {
+            "observedAt": observed_at,
+            "ageSeconds": age_seconds,
+            "maxAgeSeconds": max_age,
+        },
+        "expected": {
+            "revision": authority["expected_revision"],
+            "hash": authority["expected_hash"],
+        },
+        "observed": {
+            "revision": observed_revision,
+            "hash": observed_hash,
+            "workflowState": workflow_state,
+        },
+        "links": {
+            "board": "task-dispatch --database "
+            + shlex.quote(authority["database_path"])
+            + " workflow watch "
+            + shlex.quote(authority["workflow_id"])
+            + " --no-drive",
+            "artifacts": authority["artifact_root"],
+        },
+    }
+
+
+def campaign_overview(
+    db: sqlite3.Connection, campaign_id: str, *, reference_time: datetime | None = None
+) -> dict[str, Any]:
+    """Build a read-only campaign overview; this function never records state."""
+    revision = campaign_revision(db, campaign_id)
+    revision_row = db.execute(
+        "SELECT plan,plan_hash FROM campaign_revisions WHERE campaign_id=? AND revision=?",
+        (campaign_id, revision),
+    ).fetchone()
+    plan = json.loads(revision_row["plan"])
+    reference_time = reference_time or datetime.now(UTC)
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in db.execute(
+        "SELECT * FROM child_authorities WHERE campaign_id=? AND revision=? ORDER BY id",
+        (campaign_id, revision),
+    ):
+        item = dict(row)
+        latest[(item["phase_id"], item["workflow_id"])] = item
+    gate_rows = list(
+        db.execute(
+            "SELECT phase_id,gate_id,decision,actor,rationale,created_at FROM campaign_gates WHERE campaign_id=? AND revision=? ORDER BY id",
+            (campaign_id, revision),
+        )
+    )
+    proposals = list(
+        db.execute(
+            "SELECT * FROM integration_proposals WHERE campaign_id=? AND revision=? ORDER BY created_at,id",
+            (campaign_id, revision),
+        )
+    )
+    phases = []
+    blockers = []
+    for phase in plan["phases"]:
+        phase_id = phase["id"]
+        children = [
+            campaign_authority_snapshot(authority, reference_time=reference_time)
+            for (observed_phase, _), authority in latest.items()
+            if observed_phase == phase_id
+        ]
+        if not children:
+            blockers.append({"phase": phase_id, "kind": "missing-authority"})
+        for child in children:
+            if child["blocked"]:
+                blockers.append(
+                    {
+                        "phase": phase_id,
+                        "workflow": child["workflow"],
+                        "kind": child["status"],
+                    }
+                )
+        gates = []
+        for declared in phase.get("gates", []):
+            decisions = [
+                row
+                for row in gate_rows
+                if row["phase_id"] == phase_id and row["gate_id"] == declared["id"]
+            ]
+            gates.append(
+                {
+                    "id": declared["id"],
+                    "requiredFor": declared["decision"],
+                    "decision": decisions[-1]["decision"] if decisions else "pending",
+                    "actor": decisions[-1]["actor"] if decisions else None,
+                }
+            )
+        integrations = []
+        for proposal in proposals:
+            if proposal["phase_id"] != phase_id:
+                continue
+            approval = db.execute(
+                "SELECT decision,actor,created_at FROM integration_approvals WHERE proposal_id=? ORDER BY id DESC LIMIT 1",
+                (proposal["id"],),
+            ).fetchone()
+            record = db.execute(
+                "SELECT resulting_sha,verification,recorder,created_at FROM integration_records WHERE proposal_id=? ORDER BY id DESC LIMIT 1",
+                (proposal["id"],),
+            ).fetchone()
+            integrations.append(
+                {
+                    "proposal": proposal["id"],
+                    "workflow": proposal["workflow_id"],
+                    "writer": proposal["writer_id"],
+                    "state": "recorded"
+                    if record
+                    else (
+                        "approved"
+                        if approval and approval["decision"] == "approved"
+                        else "proposed"
+                    ),
+                    "commit": record["resulting_sha"] if record else None,
+                    "verification": json.loads(record["verification"])
+                    if record
+                    else [],
+                }
+            )
+        phase_blockers = [item for item in blockers if item["phase"] == phase_id]
+        phases.append(
+            {
+                "id": phase_id,
+                "desiredPhase": phase_id,
+                # This is only the authoritative child workflow state, never a
+                # campaign completion or advancement claim.
+                "observedPhase": "blocked" if phase_blockers else "authority-observed",
+                "children": children,
+                "gates": gates,
+                "integrations": integrations,
+                "blocked": bool(phase_blockers),
+            }
+        )
+    incidents = [
+        dict(row)
+        for row in db.execute(
+            "SELECT id,kind,source_locator,detail,created_at FROM campaign_events WHERE campaign_id=? AND revision=? AND kind='incident' ORDER BY id",
+            (campaign_id, revision),
+        )
+    ]
+    next_action = (
+        "Observe or correct the labeled child authority; campaign advancement is blocked."
+        if blockers
+        else "Review recorded gates and integration evidence; this overview makes no advancement claim."
+    )
+    return {
+        "id": campaign_id,
+        "revision": revision,
+        "planHash": revision_row["plan_hash"],
+        "displayOnly": True,
+        "phases": phases,
+        "incidents": incidents,
+        "authorityBlockers": blockers,
+        "blocked": bool(blockers),
+        "nextAction": next_action,
+    }
+
+
+def command_campaign_overview(args: argparse.Namespace) -> None:
+    db = campaign_readonly_connect(args.ledger)
+    try:
+        print(json.dumps(campaign_overview(db, args.id), indent=2, sort_keys=True))
+    finally:
+        db.close()
 
 
 def command_campaign_create(args: argparse.Namespace) -> None:
@@ -5316,6 +5564,14 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_campaign_parser.add_argument("--ledger", required=True)
     inspect_campaign_parser.add_argument("id")
     inspect_campaign_parser.set_defaults(handler=command_campaign_inspect)
+    for name in ("status", "watch"):
+        overview = campaign_commands.add_parser(
+            name,
+            help="display a read-only campaign overview from ledger and child authorities",
+        )
+        overview.add_argument("--ledger", required=True)
+        overview.add_argument("id")
+        overview.set_defaults(handler=command_campaign_overview)
     gate_campaign_parser = campaign_commands.add_parser(
         "gate", help="record an explicit phase gate decision"
     )

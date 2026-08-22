@@ -26,6 +26,16 @@ task-dispatch campaign observe --ledger /tmp/campaign-ledger.sqlite release-prep
 
 `propose-integration`, `approve-integration`, and `record-integration` are separate explicit records. Recording requires a fresh matching child revision/hash, an approved integration gate and proposal, complete commit/verification evidence, and user (or unexpired bounded) authority. `pause`, `resume`, and `consolidate` only append campaign events/records.
 
+## Display-only overview
+
+```bash
+task-dispatch campaign status --ledger /tmp/campaign-ledger.sqlite release-prep
+# `watch` is the same one-shot, display-only overview.
+task-dispatch campaign watch --ledger /tmp/campaign-ledger.sqlite release-prep
+```
+
+The overview reads the ledger and named child SQLite authorities read-only. It labels missing, stale, unreadable, and revision/hash-mismatched authority as **BLOCKED** and shows child board/artifact links, gates, integrations, incidents, and a conservative next action. It does not refresh observations, schedule, dispatch, retry, integrate, or claim campaign completion.
+
 ## Campaign schema version 2
 
 ```json
@@ -92,4 +102,4 @@ A `writer-retry` delegation is additionally bound to one `attemptId`, one positi
 
 The projection contains predicted phases, computed and declared child hashes, child validation findings, and user-required gate approvals. A nonzero exit means any error finding exists; child-workflow warnings remain visible.
 
-Do not add a campaign registry, persistent ledger tables, dispatch operation, TUI, attention delivery, wisdom engine, model routing, extension alias, auto-integration, or retry behavior to this slice.
+Do not add scheduling, dispatch operations, retries, integration actions, pane-derived completion, attention delivery, wisdom, model routing, extension aliases, or auto-integration to the display-only overview.
