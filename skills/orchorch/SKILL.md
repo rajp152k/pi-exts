@@ -24,7 +24,15 @@ task-dispatch campaign gate --ledger /tmp/campaign-ledger.sqlite release-prep --
 task-dispatch campaign observe --ledger /tmp/campaign-ledger.sqlite release-prep --phase prepare --workflow child-id --child-database /path/child.sqlite --artifact-root /path/artifacts --revision 1 --sha256 <revision-hash>
 ```
 
-`propose-integration`, `approve-integration`, and `record-integration` are separate explicit records. Recording requires a fresh matching child revision/hash, an approved integration gate and proposal, complete commit/verification evidence, and user (or unexpired bounded) authority. `pause`, `resume`, and `consolidate` only append campaign events/records.
+`propose-integration`, `approve-integration`, and `record-integration` are separate explicit records. Recording requires a fresh matching child revision/hash, an approved integration gate and proposal, complete commit/verification evidence, and user (or unexpired bounded) authority. `pause`, `resume`, and `consolidate` only append campaign events/records. Consolidation is deterministic from campaign references and never infers child completion; an optional reviewed input can list only proposed wisdom candidates.
+
+## Measured, constrained pilots
+
+All pilots require the explicit ledger and record observations only. They never dispatch children, control a model, send an alert, or promote a rule.
+
+- **Wisdom:** Store Git-versioned JSON policy, scroll, or precedent records with lifecycle status, scoped tags, provenance, expiry, owner, and reviewer. `campaign wisdom retrieve --tag <tag> --at <ISO-8601>` uses deterministic tag matching and returns reviewed/adopted non-expired entries only. `apply` records an attributed application or override. No service, RAG/embeddings, automatic harvest, promotion, or enforcement exists.
+- **Attention:** `campaign attention record` accepts only actionable source-linked event JSON and deduplicates an open fingerprint; `resolve` closes it. It is opt-in, produces no notification, and excludes routine settled or merely informational events.
+- **Routing:** `campaign route-preflight` accepts an explicit provider-qualified model and thinking level plus an operator-supplied available-route list. It fails closed for any mismatch, never substitutes or dispatches a model, and only records an explicit selection/escalation with cost, latency, and supplied outcome for baseline review.
 
 ## Display-only overview
 
@@ -102,4 +110,4 @@ A `writer-retry` delegation is additionally bound to one `attemptId`, one positi
 
 The projection contains predicted phases, computed and declared child hashes, child validation findings, and user-required gate approvals. A nonzero exit means any error finding exists; child-workflow warnings remain visible.
 
-Do not add scheduling, dispatch operations, retries, integration actions, pane-derived completion, attention delivery, wisdom, model routing, extension aliases, or auto-integration to the display-only overview.
+Do not add scheduling, dispatch operations, retries, integration actions, pane-derived completion, attention delivery, wisdom retrieval, model routing, extension aliases, or auto-integration to the display-only overview. The pilots above are explicit ledger commands, not overview behavior.

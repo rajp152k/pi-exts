@@ -16,12 +16,12 @@ Personal Pi extensions, organized under the `rp152kpi:<name>` namespace.
 
 ## Capabilities
 
-- [`rp152kpi:notify`](extensions/rp152kpi:notify): shows a dismissible top-right tmux popup with the current tmux location when Pi settles in TUI mode.
+- [`rp152kpi:notify`](extensions/rp152kpi:notify): provides an explicit, dismissible top-right tmux popup with the current tmux location; it does not interrupt routine settlement.
 - [`rp152kpi:firefox`](extensions/rp152kpi:firefox): starts off and provides on, off, status, and restart controls for its Firefox MCP connection.
 - [`tmux-control`](skills/tmux-control): directs Pi to safely inspect and control local tmux sessions through the tmux CLI.
 - [`pi-task-dispatch`](skills/pi-task-dispatch): dispatches and monitors tmux-backed Pi workers, with SQLite-persisted dependency workflows, event observability, and a live board/Gantt watch.
 - [`orchestrate`](skills/orchestrate): turns a goal and discovery todo corpus into a reviewed, safely parallel task-dispatch graph and observable execution.
-- [`orchorch`](skills/orchorch): purely designs and simulates a bounded multi-workflow campaign; it does not dispatch or create durable runtime state.
+- [`orchorch`](skills/orchorch): designs/simulates bounded multi-workflow campaigns and provides explicitly selected ledger pilots for consolidation, reviewed wisdom, calm attention records, and fail-closed route preflight; it never dispatches from these commands.
 - [`modelling`](skills/modelling): turns a context into a bounded, decision-relevant model specification with explicit uncertainty and validation.
 - [`science`](skills/science): applies scientific-method thinking to critically question claims, learning, and software.
 - [`rp152kpi:traces`](extensions/rp152kpi:traces): lists or searches local traces and loads trace IDs or traces.com links through the `traces` CLI.

@@ -64,9 +64,7 @@ async function sendReadyNotification(pi: ExtensionAPI): Promise<boolean> {
 	if (!process.env.TMUX || !pane) return false;
 
 	const location = await getTmuxLocation(pi);
-	const message = location
-		? `Ready for input — ${location}`
-		: "Ready for input";
+	const message = location ? `Ready for input — ${location}` : "Ready for input";
 	await showTmuxPopup(pi, pane, sanitizeNotificationText(message));
 	return true;
 }
@@ -87,13 +85,7 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("agent_settled", async (_event, ctx) => {
-		if (ctx.mode !== "tui") return;
-
-		try {
-			await sendReadyNotification(pi);
-		} catch {
-			// Notifications must never interfere with the completed agent run.
-		}
-	});
+	// Deliberately manual: routine settlement is not an actionable attention event
+	// and must not steal focus. Campaign attention is recorded separately in its
+	// ledger and never invokes a global popup.
 }

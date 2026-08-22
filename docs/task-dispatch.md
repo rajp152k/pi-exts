@@ -180,6 +180,16 @@ task-dispatch campaign watch --ledger /tmp/release-ledger.sqlite release-prep
 
 The overview reads the ledger plus its child authority locators without writing either database. It shows each declared phase, authoritative child workflow state, observation freshness, board (`workflow watch --no-drive`) and artifact links, gate decisions, integration proposal/commit evidence, recorded incidents, and a conservative next action. A missing observation, stale observation, unreadable child database, or revision/hash mismatch is explicitly labeled **BLOCKED**; it makes no completion or advancement claim and cannot schedule, retry, integrate, or refresh an observation.
 
+### Constrained campaign pilots
+
+`campaign consolidate` emits a deterministic report from ledger references: planned-versus-observed phases, authority-linked integration evidence, incidents, outstanding decisions, opportunities, and counts. An optional reviewed file may add only proposed wisdom candidates; it cannot promote them.
+
+`campaign wisdom record/retrieve/apply` stores human-reviewed policy, scroll, or precedent JSON records. Retrieval is deterministic tag intersection at an explicit timestamp and returns only reviewed/adopted, non-expired records. Records carry provenance, expiry, scope, lifecycle, owner/reviewer, and any application or override is separately attributed. Keep record files in Git for review. This is not a service, RAG, automatic extraction/promotion, or policy enforcement mechanism.
+
+`campaign attention record` is opt-in and records only actionable `decision`, `approval`, `integration`, `blocked`, or `incident` events with authority, impact, options, recommendation, confidence, and source. Its deterministic fingerprint coalesces an open duplicate; `attention resolve` closes that lifecycle. It sends no popup and must not be used for routine settled information.
+
+`campaign route-preflight` compares one explicit `{provider, model, thinking}` JSON route to an operator-supplied availability JSON list. It fails closed when the exact provider-qualified model/thinking combination is unavailable and never substitutes, routes, or dispatches a model. A successful explicit invocation records task locator, selected route, escalation source, cost, latency, and supplied outcome for later baseline comparison.
+
 ## Opt-in real smoke test
 
 The default Python suite uses a fake JSONL RPC command and requires neither Pi

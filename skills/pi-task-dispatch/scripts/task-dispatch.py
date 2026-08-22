@@ -4715,6 +4715,11 @@ def campaign_connect(value: str) -> sqlite3.Connection:
     CREATE TABLE IF NOT EXISTS integration_records (id INTEGER PRIMARY KEY AUTOINCREMENT, proposal_id TEXT NOT NULL REFERENCES integration_proposals(id), resulting_sha TEXT NOT NULL, verification TEXT NOT NULL, recorder TEXT NOT NULL, attestation TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS campaign_events (id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, kind TEXT NOT NULL, source_locator TEXT NOT NULL, detail TEXT NOT NULL, created_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS campaign_consolidations (id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, report TEXT NOT NULL, recorder TEXT NOT NULL, created_at TEXT NOT NULL);
+    -- Pilots are local ledger records, never a service, scheduler, or enforcement point.
+    CREATE TABLE IF NOT EXISTS wisdom_records (id TEXT PRIMARY KEY, kind TEXT NOT NULL, status TEXT NOT NULL, scope_tags TEXT NOT NULL, record TEXT NOT NULL, content_hash TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS wisdom_applications (id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, wisdom_id TEXT NOT NULL REFERENCES wisdom_records(id), action TEXT NOT NULL, actor TEXT NOT NULL, rationale TEXT NOT NULL, source_locator TEXT NOT NULL, created_at TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS attention_events (id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, fingerprint TEXT NOT NULL, kind TEXT NOT NULL, event TEXT NOT NULL, lifecycle TEXT NOT NULL, created_at TEXT NOT NULL, resolved_at TEXT, UNIQUE(campaign_id,revision,fingerprint,lifecycle));
+    CREATE TABLE IF NOT EXISTS routing_records (id INTEGER PRIMARY KEY AUTOINCREMENT, campaign_id TEXT NOT NULL, revision INTEGER NOT NULL, task_locator TEXT NOT NULL, route TEXT NOT NULL, selection TEXT NOT NULL, outcome TEXT NOT NULL, created_at TEXT NOT NULL);
     """)
     # Existing append-only ledgers predate the observation freshness bound.  A
     # default preserves their recorded references without rewriting any rows.
@@ -5096,6 +5101,252 @@ def record_campaign_integration(
             f"proposal:{proposal}",
             {"resultingCommitSha": resulting_sha, "recorder": recorder},
         )
+
+
+def deterministic_consolidation(
+    db: sqlite3.Connection, campaign_id: str
+) -> dict[str, Any]:
+    """Build a terminal report from recorded authority, never child runtime copies."""
+    revision = campaign_revision(db, campaign_id)
+    plan = json.loads(
+        db.execute(
+            "SELECT plan FROM campaign_revisions WHERE campaign_id=? AND revision=?",
+            (campaign_id, revision),
+        ).fetchone()["plan"]
+    )
+    observed = [
+        dict(row)
+        for row in db.execute(
+            "SELECT phase_id,workflow_id,status,observed_at FROM child_authorities WHERE campaign_id=? AND revision=? ORDER BY phase_id,workflow_id,id",
+            (campaign_id, revision),
+        )
+    ]
+    events = [
+        dict(row)
+        for row in db.execute(
+            "SELECT kind,source_locator,detail,created_at FROM campaign_events WHERE campaign_id=? AND revision=? ORDER BY id",
+            (campaign_id, revision),
+        )
+    ]
+    integrations = [
+        dict(row)
+        for row in db.execute(
+            "SELECT p.phase_id,p.workflow_id,p.writer_id,r.resulting_sha,r.verification FROM integration_proposals p LEFT JOIN integration_records r ON r.proposal_id=p.id WHERE p.campaign_id=? AND p.revision=? ORDER BY p.phase_id,p.workflow_id,p.writer_id,r.id",
+            (campaign_id, revision),
+        )
+    ]
+    progress = [
+        {
+            "phase": phase["id"],
+            "declared": True,
+            "observations": [
+                item for item in observed if item["phase_id"] == phase["id"]
+            ],
+        }
+        for phase in plan["phases"]
+    ]
+    return {
+        "schemaVersion": 1,
+        "campaign": campaign_id,
+        "revision": revision,
+        "outcome": "recorded-not-inferred",
+        "plannedVsObserved": progress,
+        "evidence": integrations,
+        "incidents": [event for event in events if event["kind"] == "incident"],
+        "decisionsRequired": [
+            event
+            for event in events
+            if event["kind"] in {"decision", "approval", "blocked"}
+        ],
+        "opportunities": [event for event in events if event["kind"] == "opportunity"],
+        "metrics": {
+            "phases": len(plan["phases"]),
+            "authorityObservations": len(observed),
+            "recordedIntegrations": sum(
+                item["resulting_sha"] is not None for item in integrations
+            ),
+        },
+        "recommendedNextCampaign": None,
+        "wisdomCandidates": [],
+    }
+
+
+def validate_wisdom_record(record: dict[str, Any]) -> None:
+    required = (
+        "id",
+        "kind",
+        "status",
+        "scopeTags",
+        "provenance",
+        "expiresAt",
+        "owner",
+        "reviewer",
+    )
+    if (
+        not isinstance(record, dict)
+        or record.get("kind") not in {"policy", "scroll", "precedent"}
+        or record.get("status")
+        not in {"proposed", "reviewed", "adopted", "superseded", "retired"}
+        or not all(record.get(key) for key in required)
+        or not isinstance(record.get("scopeTags"), list)
+        or not all(isinstance(tag, str) and tag for tag in record["scopeTags"])
+    ):
+        fail(
+            "wisdom record needs id, kind, lifecycle status, scoped tags, provenance, expiry, owner, and reviewer"
+        )
+
+
+def record_wisdom(db: sqlite3.Connection, record: dict[str, Any]) -> None:
+    """Append a Git-reviewable record; adoption is a human-authored status only."""
+    validate_wisdom_record(record)
+    content = canonical_json(record)
+    with db:
+        db.execute(
+            "INSERT INTO wisdom_records VALUES(?,?,?,?,?,?,?)",
+            (
+                record["id"],
+                record["kind"],
+                record["status"],
+                canonical_json(sorted(record["scopeTags"])),
+                content,
+                hashlib.sha256(content.encode()).hexdigest(),
+                now(),
+            ),
+        )
+
+
+def retrieve_wisdom(
+    db: sqlite3.Connection, tags: list[str], *, at: str
+) -> list[dict[str, Any]]:
+    """Deterministic scoped retrieval: no embeddings, inference, or promotion."""
+    requested = set(tags)
+    results = []
+    for row in db.execute(
+        "SELECT record FROM wisdom_records WHERE status IN ('reviewed','adopted') ORDER BY id"
+    ):
+        record = json.loads(row["record"])
+        if record["expiresAt"] > at and requested.intersection(record["scopeTags"]):
+            results.append(record)
+    return results
+
+
+def record_wisdom_application(
+    db: sqlite3.Connection,
+    campaign_id: str,
+    wisdom_id: str,
+    action: str,
+    actor: str,
+    rationale: str,
+    source: str,
+) -> None:
+    if action not in {"applied", "overridden"} or not all((actor, rationale, source)):
+        fail(
+            "wisdom application needs applied/overridden, actor, rationale, and source"
+        )
+    with db:
+        db.execute(
+            "INSERT INTO wisdom_applications(campaign_id,revision,wisdom_id,action,actor,rationale,source_locator,created_at) VALUES(?,?,?,?,?,?,?,?)",
+            (
+                campaign_id,
+                campaign_revision(db, campaign_id),
+                wisdom_id,
+                action,
+                actor,
+                rationale,
+                source,
+                now(),
+            ),
+        )
+
+
+def attention_fingerprint(event: dict[str, Any]) -> str:
+    return hashlib.sha256(
+        canonical_json(
+            {key: event.get(key) for key in ("kind", "authority", "impact", "options")}
+        ).encode()
+    ).hexdigest()
+
+
+def record_attention(
+    db: sqlite3.Connection, campaign_id: str, event: dict[str, Any]
+) -> dict[str, Any]:
+    required = (
+        "kind",
+        "authority",
+        "impact",
+        "options",
+        "recommendation",
+        "confidence",
+        "source",
+    )
+    if (
+        event.get("kind")
+        not in {"decision", "approval", "integration", "blocked", "incident"}
+        or event.get("confidence") not in {"observed", "inferred"}
+        or not all(event.get(key) for key in required)
+        or not isinstance(event.get("options"), list)
+    ):
+        fail(
+            "attention is opt-in and needs actionable kind, authority, impact, options, recommendation, confidence, and source"
+        )
+    fingerprint = attention_fingerprint(event)
+    revision = campaign_revision(db, campaign_id)
+    open_event = db.execute(
+        "SELECT id FROM attention_events WHERE campaign_id=? AND revision=? AND fingerprint=? AND lifecycle='open'",
+        (campaign_id, revision, fingerprint),
+    ).fetchone()
+    if open_event:
+        return {"created": False, "fingerprint": fingerprint, "lifecycle": "open"}
+    with db:
+        db.execute(
+            "INSERT INTO attention_events(campaign_id,revision,fingerprint,kind,event,lifecycle,created_at) VALUES(?,?,?,?,?,?,?)",
+            (
+                campaign_id,
+                revision,
+                fingerprint,
+                event["kind"],
+                canonical_json(event),
+                "open",
+                now(),
+            ),
+        )
+    return {"created": True, "fingerprint": fingerprint, "lifecycle": "open"}
+
+
+def resolve_attention(
+    db: sqlite3.Connection, campaign_id: str, fingerprint: str, actor: str
+) -> None:
+    if not actor:
+        fail("attention resolution needs an actor")
+    with db:
+        db.execute(
+            "UPDATE attention_events SET lifecycle='resolved',resolved_at=? WHERE campaign_id=? AND revision=? AND fingerprint=? AND lifecycle='open'",
+            (now(), campaign_id, campaign_revision(db, campaign_id), fingerprint),
+        )
+
+
+def preflight_route(
+    available: list[dict[str, Any]], route: dict[str, Any]
+) -> dict[str, Any]:
+    """Validate an explicit provider-qualified route; never substitute or dispatch."""
+    if (
+        not isinstance(route.get("provider"), str)
+        or not isinstance(route.get("model"), str)
+        or route.get("thinking") not in {"low", "medium", "high", "adaptive"}
+    ):
+        fail("route needs provider, model, and explicit thinking level")
+    exact = [
+        item
+        for item in available
+        if item.get("provider") == route["provider"]
+        and item.get("model") == route["model"]
+        and route["thinking"] in item.get("thinking", [])
+    ]
+    return {
+        "valid": bool(exact),
+        "selection": route if exact else None,
+        "failure": None if exact else "unavailable-route-fail-closed",
+    }
 
 
 def inspect_campaign(db: sqlite3.Connection, campaign_id: str) -> dict[str, Any]:
@@ -5480,7 +5731,13 @@ def command_campaign_state(args: argparse.Namespace) -> None:
 def command_campaign_consolidate(args: argparse.Namespace) -> None:
     db = campaign_connect(args.ledger)
     try:
-        report = json.loads(Path(args.report).read_text())
+        report = deterministic_consolidation(db, args.id)
+        if args.report:
+            supplied = json.loads(Path(args.report).read_text())
+            # Only declared harvest candidates may be supplied; they remain proposed.
+            if not isinstance(supplied.get("wisdomCandidates", []), list):
+                fail("consolidation wisdomCandidates must be a list")
+            report["wisdomCandidates"] = supplied["wisdomCandidates"]
         with db:
             db.execute(
                 "INSERT INTO campaign_consolidations(campaign_id,revision,report,recorder,created_at) VALUES(?,?,?,?,?)",
@@ -5496,9 +5753,87 @@ def command_campaign_consolidate(args: argparse.Namespace) -> None:
                 db,
                 args.id,
                 "consolidated",
-                f"report:{args.report}",
+                "consolidation:deterministic",
                 {"recorder": args.recorder},
             )
+        print(json.dumps(report, indent=2, sort_keys=True))
+    finally:
+        db.close()
+
+
+def command_campaign_wisdom(args: argparse.Namespace) -> None:
+    db = campaign_connect(args.ledger)
+    try:
+        if args.wisdom_command == "record":
+            record_wisdom(db, json.loads(Path(args.file).read_text()))
+        elif args.wisdom_command == "retrieve":
+            print(
+                json.dumps(
+                    retrieve_wisdom(db, args.tag, at=args.at), indent=2, sort_keys=True
+                )
+            )
+        else:
+            record_wisdom_application(
+                db,
+                args.id,
+                args.wisdom,
+                args.action,
+                args.actor,
+                args.rationale,
+                args.source,
+            )
+    finally:
+        db.close()
+
+
+def command_campaign_attention(args: argparse.Namespace) -> None:
+    db = campaign_connect(args.ledger)
+    try:
+        if args.attention_command == "record":
+            print(
+                json.dumps(
+                    record_attention(
+                        db, args.id, json.loads(Path(args.file).read_text())
+                    ),
+                    sort_keys=True,
+                )
+            )
+        else:
+            resolve_attention(db, args.id, args.fingerprint, args.actor)
+    finally:
+        db.close()
+
+
+def command_campaign_route(args: argparse.Namespace) -> None:
+    db = campaign_connect(args.ledger)
+    try:
+        available = json.loads(Path(args.available).read_text())
+        route = json.loads(Path(args.route).read_text())
+        result = preflight_route(available, route)
+        if not result["valid"]:
+            print(json.dumps(result, sort_keys=True))
+            raise SystemExit(1)
+        with db:
+            db.execute(
+                "INSERT INTO routing_records(campaign_id,revision,task_locator,route,selection,outcome,created_at) VALUES(?,?,?,?,?,?,?)",
+                (
+                    args.id,
+                    campaign_revision(db, args.id),
+                    args.task,
+                    canonical_json(route),
+                    canonical_json(result["selection"]),
+                    canonical_json(
+                        {
+                            "outcome": args.outcome,
+                            "cost": args.cost,
+                            "latencyMs": args.latency_ms,
+                            "escalatedFrom": args.escalated_from,
+                        }
+                    ),
+                    now(),
+                ),
+            )
+        print(json.dumps(result, sort_keys=True))
     finally:
         db.close()
 
@@ -5642,9 +5977,79 @@ def build_parser() -> argparse.ArgumentParser:
     )
     consolidate.add_argument("--ledger", required=True)
     consolidate.add_argument("id")
-    consolidate.add_argument("--report", required=True)
+    consolidate.add_argument(
+        "--report",
+        help="optional reviewed wisdom-candidate JSON; cannot alter deterministic report fields",
+    )
     consolidate.add_argument("--recorder", required=True)
     consolidate.set_defaults(handler=command_campaign_consolidate)
+    wisdom = campaign_commands.add_parser(
+        "wisdom", help="Git-versioned, human-reviewable wisdom pilot"
+    )
+    wisdom_commands = wisdom.add_subparsers(dest="wisdom_command", required=True)
+    wisdom_record = wisdom_commands.add_parser(
+        "record", help="record a reviewed wisdom JSON file"
+    )
+    wisdom_record.add_argument("--ledger", required=True)
+    wisdom_record.add_argument("--file", required=True)
+    wisdom_record.set_defaults(handler=command_campaign_wisdom)
+    wisdom_retrieve = wisdom_commands.add_parser(
+        "retrieve", help="deterministically retrieve scoped non-expired records"
+    )
+    wisdom_retrieve.add_argument("--ledger", required=True)
+    wisdom_retrieve.add_argument("--tag", action="append", required=True)
+    wisdom_retrieve.add_argument(
+        "--at", required=True, help="ISO-8601 comparison timestamp"
+    )
+    wisdom_retrieve.set_defaults(handler=command_campaign_wisdom)
+    wisdom_apply = wisdom_commands.add_parser(
+        "apply", help="record application or human override"
+    )
+    wisdom_apply.add_argument("--ledger", required=True)
+    wisdom_apply.add_argument("id")
+    wisdom_apply.add_argument("--wisdom", required=True)
+    wisdom_apply.add_argument(
+        "--action", choices=("applied", "overridden"), required=True
+    )
+    wisdom_apply.add_argument("--actor", required=True)
+    wisdom_apply.add_argument("--rationale", required=True)
+    wisdom_apply.add_argument("--source", required=True)
+    wisdom_apply.set_defaults(handler=command_campaign_wisdom)
+    attention = campaign_commands.add_parser(
+        "attention", help="opt-in, deduplicated actionable attention pilot"
+    )
+    attention_commands = attention.add_subparsers(
+        dest="attention_command", required=True
+    )
+    attention_record = attention_commands.add_parser(
+        "record",
+        help="record or coalesce one actionable event; no notification is sent",
+    )
+    attention_record.add_argument("--ledger", required=True)
+    attention_record.add_argument("id")
+    attention_record.add_argument("--file", required=True)
+    attention_record.set_defaults(handler=command_campaign_attention)
+    attention_resolve = attention_commands.add_parser(
+        "resolve", help="resolve a recorded attention fingerprint"
+    )
+    attention_resolve.add_argument("--ledger", required=True)
+    attention_resolve.add_argument("id")
+    attention_resolve.add_argument("--fingerprint", required=True)
+    attention_resolve.add_argument("--actor", required=True)
+    attention_resolve.set_defaults(handler=command_campaign_attention)
+    route = campaign_commands.add_parser(
+        "route-preflight", help="validate and explicitly record a route; never dispatch"
+    )
+    route.add_argument("--ledger", required=True)
+    route.add_argument("id")
+    route.add_argument("--task", required=True)
+    route.add_argument("--available", required=True)
+    route.add_argument("--route", required=True)
+    route.add_argument("--outcome", required=True)
+    route.add_argument("--cost", type=float, required=True)
+    route.add_argument("--latency-ms", type=float, required=True)
+    route.add_argument("--escalated-from")
+    route.set_defaults(handler=command_campaign_route)
     workflow = commands.add_parser(
         "workflow", help="create, schedule, and observe workflows"
     )

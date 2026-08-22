@@ -4,7 +4,7 @@ Install bundles using the [package guide](package-guide.md). Restart Pi after in
 
 ## Notify
 
-`rp152kpi:notify` displays a top-right tmux popup when Pi settles and is ready for input. The popup identifies the current tmux session, window index, and window name, and remains until a key is pressed. It requires tmux 3.2 or newer and Pi running in TUI mode from a tmux pane. Automatic notifications are silently skipped outside TUI mode or when `TMUX`/`TMUX_PANE` is unavailable. From Pi, run `/notify-test` to test it; failed automatic popups do not interrupt a completed run. See its [extension README](../extensions/rp152kpi:notify/README.md).
+`rp152kpi:notify` provides only the explicit `/notify-test` tmux popup. It does not alert on routine agent settlement, so it cannot steal focus. The popup identifies the current tmux session, window index, and window name, and requires tmux 3.2 or newer plus Pi TUI mode in a tmux pane. Campaign attention is a separate opt-in ledger pilot: it records actionable, source-linked events but sends no global popup. See its [extension README](../extensions/rp152kpi:notify/README.md).
 
 ## Traces
 
@@ -41,7 +41,7 @@ See the dedicated [workflow guide](task-dispatch.md). Launch `workflow watch` im
 
 ## Orchorch
 
-`/skill:orchorch` designs and validates a versioned campaign JSON plan before any runtime action. Its only CLI slice is `task-dispatch campaign simulate --file campaign.json`: it reads referenced child workflow specs, emits canonical predicted phases, hashes, validation findings, and required user approvals, and creates no SQLite state, tmux window, artifacts, processes, child workflow, or dispatch. See [the skill](../skills/orchorch/SKILL.md).
+`/skill:orchorch` designs and validates a versioned campaign JSON plan before any runtime action. `campaign simulate` remains side-effect free. An explicitly selected campaign ledger can record deterministic consolidation reports; Git-versioned, human-reviewed wisdom records with scoped tag retrieval; opt-in deduplicated actionable attention records; and provider-qualified model-route preflight observations. These are local, measured pilots: no service, RAG, automatic promotion/enforcement, global alert UI, model substitution, or model dispatch. See [the skill](../skills/orchorch/SKILL.md).
 
 ## Modelling
 
