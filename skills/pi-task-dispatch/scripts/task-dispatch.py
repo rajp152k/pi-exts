@@ -1233,6 +1233,428 @@ def validate_workflow_spec(spec: Any) -> list[dict[str, Any]]:
 validate_spec = validate_workflow_spec
 
 
+CAMPAIGN_SCHEMA_VERSION = 1
+PROTECTED_CAMPAIGN_ACTIONS = {"dispatch", "integrate", "record"}
+
+
+def canonical_json(value: Any) -> str:
+    """Return the stable JSON representation used for campaign fingerprints."""
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def campaign_finding(
+    code: str, message: str, remediation: str, *, task_ids: list[str] | None = None
+) -> dict[str, Any]:
+    return finding(code, "error", message, task_ids=task_ids, remediation=remediation)
+
+
+def simulate_campaign(path: str) -> dict[str, Any]:
+    """Purely validate and project a campaign; never opens runtime authorities."""
+    findings: list[dict[str, Any]] = []
+    try:
+        source = Path(path)
+        campaign = json.loads(source.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        return {
+            "valid": False,
+            "findings": [
+                campaign_finding(
+                    "invalid-campaign",
+                    f"cannot read campaign JSON: {error}",
+                    "Provide a readable campaign JSON object.",
+                )
+            ],
+            "predictedPhases": [],
+            "childSpecs": [],
+            "requiredApprovals": [],
+        }
+    if not isinstance(campaign, dict):
+        return {
+            "valid": False,
+            "findings": [
+                campaign_finding(
+                    "invalid-campaign",
+                    "campaign must be an object",
+                    "Provide a campaign JSON object.",
+                )
+            ],
+            "predictedPhases": [],
+            "childSpecs": [],
+            "requiredApprovals": [],
+        }
+    if campaign.get("schemaVersion") != CAMPAIGN_SCHEMA_VERSION:
+        findings.append(
+            campaign_finding(
+                "unsupported-campaign-schema",
+                f"schemaVersion must be {CAMPAIGN_SCHEMA_VERSION}",
+                "Use the documented campaign schema version.",
+            )
+        )
+    phases = campaign.get("phases")
+    if not isinstance(phases, list) or not phases:
+        findings.append(
+            campaign_finding(
+                "invalid-phases",
+                "campaign needs a non-empty phases array",
+                "Add ordered phase objects.",
+            )
+        )
+        phases = []
+    phase_ids: set[str] = set()
+    phase_by_id: dict[str, dict[str, Any]] = {}
+    predicted: list[dict[str, Any]] = []
+    child_specs: list[dict[str, Any]] = []
+    references: set[str] = set()
+    hashes: set[str] = set()
+    approvals: list[dict[str, Any]] = []
+    for index, phase in enumerate(phases):
+        if (
+            not isinstance(phase, dict)
+            or not isinstance(phase.get("id"), str)
+            or not RUN_ID.fullmatch(phase["id"])
+        ):
+            findings.append(
+                campaign_finding(
+                    "invalid-phase",
+                    f"phase {index} needs a valid id",
+                    "Use a lowercase hyphenated phase id.",
+                )
+            )
+            continue
+        phase_id = phase["id"]
+        if phase_id in phase_ids:
+            findings.append(
+                campaign_finding(
+                    "duplicate-phase-id",
+                    f"phase id {phase_id!r} is duplicated",
+                    "Give every phase a unique id.",
+                )
+            )
+            continue
+        phase_ids.add(phase_id)
+        phase_by_id[phase_id] = phase
+        depends_on = phase.get("dependsOn", [])
+        if not isinstance(depends_on, list) or not all(
+            isinstance(item, str) for item in depends_on
+        ):
+            findings.append(
+                campaign_finding(
+                    "invalid-phase-dependencies",
+                    f"phase {phase_id} dependsOn must be a string list",
+                    "Provide phase ids in dependsOn.",
+                )
+            )
+            depends_on = []
+        gates = phase.get("gates")
+        if (
+            not isinstance(gates, list)
+            or not gates
+            or not all(isinstance(gate, str) and gate.strip() for gate in gates)
+        ):
+            findings.append(
+                campaign_finding(
+                    "missing-phase-gates",
+                    f"phase {phase_id} needs non-empty gates",
+                    "Declare one or more explicit approval gate ids.",
+                )
+            )
+            gates = []
+        else:
+            approvals.extend(
+                {"phase": phase_id, "gate": gate, "approver": "user"} for gate in gates
+            )
+        declarations = phase.get("childSpecs")
+        if not isinstance(declarations, list) or not declarations:
+            findings.append(
+                campaign_finding(
+                    "invalid-child-specs",
+                    f"phase {phase_id} needs childSpecs",
+                    "Declare validated child workflow specifications.",
+                )
+            )
+            declarations = []
+        phase_children: list[str] = []
+        for declaration in declarations:
+            if not isinstance(declaration, dict):
+                findings.append(
+                    campaign_finding(
+                        "invalid-child-spec",
+                        f"phase {phase_id} has a non-object child spec",
+                        "Use an object with ref, sha256, and integrations.",
+                    )
+                )
+                continue
+            ref, declared_hash = declaration.get("ref"), declaration.get("sha256")
+            if (
+                not isinstance(ref, str)
+                or not ref
+                or not isinstance(declared_hash, str)
+                or not re.fullmatch(r"[0-9a-f]{64}", declared_hash)
+            ):
+                findings.append(
+                    campaign_finding(
+                        "invalid-child-spec",
+                        f"phase {phase_id} child spec needs ref and lowercase sha256",
+                        "Provide a relative JSON ref and its SHA-256 hash.",
+                    )
+                )
+                continue
+            if ref in references:
+                findings.append(
+                    campaign_finding(
+                        "duplicate-child-spec-reference",
+                        f"child spec reference {ref!r} is duplicated",
+                        "Reference every child specification once.",
+                    )
+                )
+            references.add(ref)
+            if declared_hash in hashes:
+                findings.append(
+                    campaign_finding(
+                        "duplicate-child-spec-hash",
+                        f"child spec hash {declared_hash} is duplicated",
+                        "Give each child specification unique content and hash.",
+                    )
+                )
+            hashes.add(declared_hash)
+            child_path = (source.parent / ref).resolve()
+            if not child_path.is_relative_to(source.parent.resolve()):
+                findings.append(
+                    campaign_finding(
+                        "invalid-child-spec-reference",
+                        f"child spec {ref!r} escapes the campaign directory",
+                        "Use a relative child spec path within the campaign directory.",
+                    )
+                )
+                continue
+            try:
+                raw = child_path.read_bytes()
+                workflow = json.loads(raw)
+            except (OSError, json.JSONDecodeError) as error:
+                findings.append(
+                    campaign_finding(
+                        "unreadable-child-spec",
+                        f"cannot read child spec {ref!r}: {error}",
+                        "Provide a readable workflow JSON file.",
+                    )
+                )
+                continue
+            actual_hash = hashlib.sha256(
+                canonical_json(workflow).encode("utf-8")
+            ).hexdigest()
+            if actual_hash != declared_hash:
+                findings.append(
+                    campaign_finding(
+                        "child-spec-hash-mismatch",
+                        f"child spec {ref!r} does not match sha256",
+                        "Update sha256 after reviewing the child specification.",
+                    )
+                )
+            workflow_findings = validate_spec(workflow)
+            for item in workflow_findings:
+                findings.append({**item, "childSpec": ref})
+            writers = (
+                sorted(
+                    task["id"]
+                    for task in workflow.get("tasks", [])
+                    if isinstance(task, dict)
+                    and isinstance(task.get("id"), str)
+                    and task.get("kind", "task") != "gate"
+                    and task.get("access", "read-only") == "default-tools"
+                )
+                if isinstance(workflow, dict)
+                else []
+            )
+            integrations = declaration.get("integrations", [])
+            declared_writers: set[str] = set()
+            if not isinstance(integrations, list):
+                findings.append(
+                    campaign_finding(
+                        "invalid-writer-integration",
+                        f"child spec {ref!r} integrations must be a list",
+                        "Declare an owner and checkpoint for every writer.",
+                    )
+                )
+                integrations = []
+            for integration in integrations:
+                if not isinstance(integration, dict) or not all(
+                    isinstance(integration.get(key), str) and integration[key].strip()
+                    for key in ("writer", "owner", "checkpoint")
+                ):
+                    findings.append(
+                        campaign_finding(
+                            "invalid-writer-integration",
+                            f"child spec {ref!r} has an invalid integration",
+                            "Declare writer, owner, and checkpoint strings.",
+                        )
+                    )
+                    continue
+                writer = integration["writer"]
+                if writer in declared_writers:
+                    findings.append(
+                        campaign_finding(
+                            "duplicate-writer-integration",
+                            f"writer {writer!r} has multiple integrations in {ref!r}",
+                            "Declare one integration owner and checkpoint per writer.",
+                        )
+                    )
+                declared_writers.add(writer)
+                if writer not in writers:
+                    findings.append(
+                        campaign_finding(
+                            "unknown-integration-writer",
+                            f"integration writer {writer!r} is not a writer in {ref!r}",
+                            "Reference a default-tools workflow task.",
+                        )
+                    )
+            for writer in writers:
+                if writer not in declared_writers:
+                    findings.append(
+                        campaign_finding(
+                            "missing-writer-integration",
+                            f"writer {writer!r} in {ref!r} lacks an integration owner and checkpoint",
+                            "Declare its integration owner and checkpoint.",
+                        )
+                    )
+            child_specs.append(
+                {
+                    "phase": phase_id,
+                    "ref": ref,
+                    "sha256": actual_hash,
+                    "declaredSha256": declared_hash,
+                    "validationFindings": workflow_findings,
+                }
+            )
+            phase_children.append(ref)
+        predicted.append(
+            {
+                "id": phase_id,
+                "dependsOn": sorted(depends_on),
+                "childSpecs": sorted(phase_children),
+                "gates": sorted(gates),
+            }
+        )
+    phase_order = {phase_id: index for index, phase_id in enumerate(phase_by_id)}
+    for phase_id, phase in phase_by_id.items():
+        for dependency in phase.get("dependsOn", []):
+            if dependency not in phase_by_id:
+                findings.append(
+                    campaign_finding(
+                        "missing-phase-dependency",
+                        f"phase {phase_id} depends on unknown phase {dependency!r}",
+                        "Reference an existing phase id.",
+                    )
+                )
+            elif phase_order[dependency] >= phase_order[phase_id]:
+                findings.append(
+                    campaign_finding(
+                        "unordered-phase-dependency",
+                        f"phase {phase_id} must follow dependency {dependency}",
+                        "Declare dependency phases before their dependents.",
+                    )
+                )
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(phase_id: str) -> None:
+        if phase_id in visiting:
+            findings.append(
+                campaign_finding(
+                    "phase-cycle",
+                    f"phase dependency cycle includes {phase_id}",
+                    "Remove a phase dependency so phases form a DAG.",
+                )
+            )
+            return
+        if phase_id in visited:
+            return
+        visiting.add(phase_id)
+        for dependency in phase_by_id[phase_id].get("dependsOn", []):
+            if dependency in phase_by_id:
+                visit(dependency)
+        visiting.remove(phase_id)
+        visited.add(phase_id)
+
+    for phase_id in phase_by_id:
+        visit(phase_id)
+    policy = campaign.get("approvals", {"default": "user", "delegations": []})
+    if not isinstance(policy, dict) or policy.get("default", "user") != "user":
+        findings.append(
+            campaign_finding(
+                "invalid-approval-default",
+                "campaign approval default must be user",
+                "Keep user as the default approval authority.",
+            )
+        )
+    delegations = policy.get("delegations", []) if isinstance(policy, dict) else []
+    if not isinstance(delegations, list):
+        findings.append(
+            campaign_finding(
+                "invalid-delegations",
+                "delegations must be a list",
+                "Use bounded explicit delegation objects.",
+            )
+        )
+    else:
+        for delegation in delegations:
+            if (
+                not isinstance(delegation, dict)
+                or not all(
+                    isinstance(delegation.get(key), str) and delegation[key].strip()
+                    for key in ("authority", "scope")
+                )
+                or not isinstance(delegation.get("actions"), list)
+                or not all(
+                    isinstance(action, str) and action.strip()
+                    for action in delegation.get("actions", [])
+                )
+            ):
+                findings.append(
+                    campaign_finding(
+                        "invalid-delegation",
+                        "delegation needs authority, scope, and actions",
+                        "Declare a bounded explicit delegation.",
+                    )
+                )
+                continue
+            protected = set(delegation["actions"]) & PROTECTED_CAMPAIGN_ACTIONS
+            if protected:
+                findings.append(
+                    campaign_finding(
+                        "delegated-protected-action",
+                        f"delegation cannot include protected actions {sorted(protected)}",
+                        "Keep dispatch, integrate, and record with the user.",
+                    )
+                )
+    return {
+        "valid": not any(item["severity"] == "error" for item in findings),
+        "schemaVersion": CAMPAIGN_SCHEMA_VERSION,
+        "campaign": campaign.get("id"),
+        "predictedPhases": predicted,
+        "childSpecs": sorted(
+            child_specs, key=lambda item: (item["phase"], item["ref"])
+        ),
+        "findings": sorted(
+            findings,
+            key=lambda item: (
+                item.get("code", ""),
+                item.get("childSpec", ""),
+                item.get("message", ""),
+            ),
+        ),
+        "requiredApprovals": sorted(
+            approvals, key=lambda item: (item["phase"], item["gate"])
+        ),
+    }
+
+
+def command_campaign_simulate(args: argparse.Namespace) -> None:
+    projection = simulate_campaign(args.file)
+    print(json.dumps(projection, indent=2, sort_keys=True))
+    if not projection["valid"]:
+        raise SystemExit(1)
+
+
 def load_spec(path: str) -> dict[str, Any]:
     try:
         spec = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -4212,6 +4634,13 @@ def build_parser() -> argparse.ArgumentParser:
     worker = commands.add_parser("worker", help=argparse.SUPPRESS)
     worker.add_argument("--run-dir", required=True)
     worker.set_defaults(handler=command_worker)
+    campaign = commands.add_parser("campaign", help="pure campaign design commands")
+    campaign_commands = campaign.add_subparsers(dest="campaign_command", required=True)
+    simulate = campaign_commands.add_parser(
+        "simulate", help="validate and project a campaign without runtime side effects"
+    )
+    simulate.add_argument("--file", required=True)
+    simulate.set_defaults(handler=command_campaign_simulate)
     workflow = commands.add_parser(
         "workflow", help="create, schedule, and observe workflows"
     )

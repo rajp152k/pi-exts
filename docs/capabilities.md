@@ -9,6 +9,7 @@ This generated table is checked by `just check`. `capabilities.json` is the capa
 | tmux-control | implemented | personal | skill | tmux | tmux | `just check` | `manual tmux session` |
 | task-dispatch | implemented | supported-local | skill + local Python runtime | tmux | uv; tmux; Pi | `just check` | `TASK_DISPATCH_SMOKE=1 skills/pi-task-dispatch/tests/smoke_real.sh` |
 | orchestrate | implemented | personal | skill | tmux | task-dispatch prerequisites | `just check` | `manual reviewed workflow` |
+| orchorch | experimental | experimental | skill + task-dispatch simulation CLI | tmux | task-dispatch prerequisites | `just check` | `manual reviewed simulation` |
 | modelling | implemented | personal | skill | modelling | Pi | `just check` | `manual Pi session` |
 | science | implemented | personal | skill | science | Pi | `just check` | `manual Pi session` |
 | traces | implemented | personal | Pi extension + skill | traces | traces CLI | `just check` | `manual trace query` |

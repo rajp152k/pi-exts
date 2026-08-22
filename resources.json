@@ -10,7 +10,8 @@
     "skills": [
       "skills/tmux-control/SKILL.md",
       "skills/pi-task-dispatch/SKILL.md",
-      "skills/orchestrate/SKILL.md"
+      "skills/orchestrate/SKILL.md",
+      "skills/orchorch/SKILL.md"
     ]
   },
   "modelling": {

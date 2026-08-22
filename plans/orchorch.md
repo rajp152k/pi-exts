@@ -2,7 +2,7 @@
 
 ## Status
 
-**Planned. Do not implement until the coherence refactor is complete through Phase 3.**
+**First approved slice implemented: pure campaign simulation only.** No campaign registry, dispatch, TUI, attention delivery, wisdom engine, model routing, extension alias, auto-integration, or retries are approved.
 
 `orchorch` is the proposed higher-order orchestration practice and capability for coordinating multiple durable task-dispatch workflows toward one bounded outcome. It is not a general control plane and must preserve child workflow SQLite databases and artifacts as their respective authorities.
 
@@ -24,6 +24,18 @@
 | Policy | A binding, scoped rule using must/must-not/requires-approval language. |
 | Scroll | Evidence-backed advisory guidance or pattern using prefer/consider/observed language. |
 | Harvest | Candidate knowledge extracted from campaign consolidation. |
+
+## Approved first slice
+
+`campaign simulate --file campaign.json` is a read-only design check. It validates versioned campaign JSON, ordered acyclic phases, unique child references and hashes, existing child-workflow validation findings, phase gates, and an explicit integration owner/checkpoint for every writer. Its canonical output contains predicted phases, hashes, findings, and required approvals. It creates no SQLite, tmux, artifacts, child workflows, processes, or dispatches.
+
+Integration follows the approved lifecycle:
+
+```text
+preparer → authority → integrator → recorder
+```
+
+User approval is the default. Delegation is permitted only when its authority, actions, and scope are explicit and bounded. Dispatch, integration, and recording are protected, nondelegable actions. Writer patches are never auto-integrated or auto-retried.
 
 ## Lifecycle
 
