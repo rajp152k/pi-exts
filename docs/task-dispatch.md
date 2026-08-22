@@ -168,7 +168,7 @@ task-dispatch campaign create --ledger /tmp/release-ledger.sqlite --file campaig
 task-dispatch campaign inspect --ledger /tmp/release-ledger.sqlite release-prep
 ```
 
-Use explicit `campaign gate`, `observe`, `propose-integration`, `approve-integration`, `record-integration`, `pause`, `resume`, and `consolidate` operations. Observation opens the named child SQLite authority read-only and fails closed for missing or revision/hash-mismatched authority. Recording integration requires fresh matching authority, approved phase/proposal decisions, complete Git commit and verification evidence, recorder attestation, and user or bounded delegated authority. These commands never start a child workflow, retry work, merge/apply a patch, infer state from tmux, or copy child runtime records.
+Use explicit `campaign gate`, `observe`, `propose-integration`, `approve-integration`, `record-integration`, `pause`, `resume`, and `consolidate` operations. Observation opens the named child SQLite authority read-only and fails closed for missing or revision/hash-mismatched authority. Recording integration requires fresh matching authority, approved phase/proposal decisions, complete Git commit and verification evidence, recorder attestation, and user or bounded delegated authority. For this repository, the user permits a campaign-specific, explicitly recorded delegation of `integrate` approval to the primary assistant; it must still state scope, expiry, required checks, and revocation condition. Dispatch, recording, and writer retry remain user-controlled unless separately delegated. These commands never start a child workflow, retry work, merge/apply a patch, infer state from tmux, or copy child runtime records.
 
 ### Display-only campaign overview
 

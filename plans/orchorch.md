@@ -35,7 +35,7 @@ Integration follows the approved lifecycle:
 preparer → authority → integrator → recorder
 ```
 
-User approval is the default. Delegation is permitted only when it is granted by the user and names its authority, actions, bounded scope, and expiry; it cannot be implicit or re-delegated. Explicit delegations may authorize dispatch, integration, recording, or writer retry. A writer-retry delegation additionally binds one exact attempt and workflow revision and declares idempotency. Writer patches are never auto-integrated or auto-retried.
+User approval is the default. For this repository, the user permits the primary assistant to receive explicitly recorded, bounded campaign delegations for **integration approval**. Each operational delegation still names the assistant authority, `integrate` action, campaign/phase/workflow/path scope, expiry, required checks, and revocation condition; it cannot be implicit or re-delegated. Dispatch, recording, and writer retry remain user-controlled unless separately delegated. A writer-retry delegation additionally binds one exact attempt and workflow revision and declares idempotency. Writer patches are never auto-integrated or auto-retried.
 
 ## Lifecycle
 
@@ -156,7 +156,7 @@ draft → approved → running → awaiting-integration → blocked | completed 
 
 Add narrow explicit commands to create, inspect, approve/reject gates, observe child authority, propose/approve/apply/record integration, pause/resume, and consolidate a campaign. No command may auto-dispatch a child, auto-integrate, auto-merge, auto-retry, or infer completion from tmux. Child workflow start remains an explicit, recorded protected action.
 
-Default authority is the user. Delegation is valid only when it names an authority, allowed actions, bounded campaign/phase/workflow/path scope, expiry, required checks, and revocation condition. It is not transitive. Delegated writer retries additionally require the exact failed attempt, pinned revision, and declared idempotency.
+Default authority is the user. The user permits campaign-specific, explicitly recorded delegation of `integrate` approval to the primary assistant for this repository. Every such delegation must name the assistant authority, bounded campaign/phase/workflow/path scope, expiry, required checks, and revocation condition; it is not transitive. Dispatch, recording, and writer retry remain user-controlled unless separately delegated. Delegated writer retries additionally require the exact failed attempt, pinned revision, and declared idempotency.
 
 ### 3. Display-only campaign overview — implemented
 

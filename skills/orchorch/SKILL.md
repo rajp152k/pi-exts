@@ -104,7 +104,7 @@ writer settled → awaiting-integration → approved integration
 → Git commit plus verification evidence recorded → eligible
 ```
 
-The user is the default authority. A delegation is valid only when it explicitly has `grantedBy: "user"`, named `authority`, non-empty `actions`, bounded `scope`, and ISO-8601 `expiresAt`. It cannot be implicit or re-delegated. The only delegation actions are `dispatch`, `integrate`, `record`, and `writer-retry`.
+The user is the default authority. For this repository, the user permits the primary assistant to receive campaign-specific, explicitly recorded `integrate` approval delegations. A delegation is valid only when it explicitly has `grantedBy: "user"`, named `authority`, non-empty `actions`, bounded `scope`, ISO-8601 `expiresAt`, required checks, and a revocation condition. It cannot be implicit or re-delegated. Dispatch, recording, and writer retry remain user-controlled unless separately delegated. The only delegation actions are `dispatch`, `integrate`, `record`, and `writer-retry`.
 
 A `writer-retry` delegation is additionally bound to one `attemptId`, one positive `workflowRevision`, and `idempotency: true`. Declaring a delegation does not execute it. There is no auto-integration and no retry behavior in this slice.
 
