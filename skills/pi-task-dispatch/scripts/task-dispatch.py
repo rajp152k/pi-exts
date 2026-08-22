@@ -583,6 +583,9 @@ def db_connect(value: str) -> sqlite3.Connection:
     -- Desired workflow control and observed cancellation delivery are deliberately
     -- additive: workflows.state remains the backwards-compatible observation.
     CREATE TABLE IF NOT EXISTS workflow_controls (workflow_id TEXT PRIMARY KEY REFERENCES workflows(id) ON DELETE CASCADE, desired_state TEXT NOT NULL, updated_at TEXT NOT NULL);
+    -- An opt-in campaign context is copied into the child authority as immutable
+    -- input. It is not a campaign scheduler or a copy of campaign runtime state.
+    CREATE TABLE IF NOT EXISTS workflow_campaign_contexts (workflow_id TEXT PRIMARY KEY REFERENCES workflows(id) ON DELETE CASCADE, context TEXT NOT NULL, context_hash TEXT NOT NULL, bound_at TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS attempt_cancellations (attempt_id TEXT PRIMARY KEY REFERENCES attempts(id) ON DELETE CASCADE, state TEXT NOT NULL, requested_at TEXT NOT NULL, delivered_at TEXT, acknowledged_at TEXT, observed_terminal_at TEXT);
     CREATE INDEX IF NOT EXISTS events_workflow_id ON events(workflow_id,id); CREATE INDEX IF NOT EXISTS attempts_task ON attempts(workflow_id,task_id); CREATE INDEX IF NOT EXISTS dispatch_outbox_workflow ON dispatch_outbox(workflow_id,state);
     """)
@@ -1756,6 +1759,94 @@ def command_campaign_simulate(args: argparse.Namespace) -> None:
         raise SystemExit(1)
 
 
+def load_campaign_context(path: str) -> dict[str, Any]:
+    """Load an operator-selected immutable campaign context, never a ledger."""
+    try:
+        context = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"cannot read campaign context: {error}")
+    if not isinstance(context, dict):
+        fail("campaign context must be a JSON object")
+    return context
+
+
+def campaign_context_hash(context: dict[str, Any]) -> str:
+    unsigned = {key: value for key, value in context.items() if key != "contextHash"}
+    return hashlib.sha256(canonical_json(unsigned).encode()).hexdigest()
+
+
+def bind_campaign_context(
+    db: sqlite3.Connection, workflow_id: str, context: dict[str, Any]
+) -> None:
+    """Bind reviewed context to the child SQLite authority at creation only."""
+    child = context.get("child")
+    campaign = context.get("campaign")
+    if (
+        context.get("schemaVersion") != 1
+        or not isinstance(child, dict)
+        or not isinstance(campaign, dict)
+        or child.get("workflowId") != workflow_id
+        or not isinstance(context.get("contextHash"), str)
+        or context["contextHash"] != campaign_context_hash(context)
+    ):
+        fail("invalid or modified campaign context")
+    revision, content_hash = current_revision_hash(db, workflow_id)
+    if (
+        child.get("workflowRevision") != revision
+        or child.get("workflowContentHash") != content_hash
+    ):
+        fail("campaign context child revision/hash does not match created workflow")
+    if not isinstance(context.get("expiresAt"), str) or not isinstance(
+        context.get("artifacts"), list
+    ):
+        fail("campaign context lacks bounded expiry or artifact declarations")
+    db.execute(
+        "INSERT INTO workflow_campaign_contexts VALUES(?,?,?,?)",
+        (workflow_id, canonical_json(context), context["contextHash"], now()),
+    )
+
+
+def validate_bound_campaign_context(
+    db: sqlite3.Connection, workflow_id: str, supplied: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    row = db.execute(
+        "SELECT context,context_hash FROM workflow_campaign_contexts WHERE workflow_id=?",
+        (workflow_id,),
+    ).fetchone()
+    if not row:
+        return None
+    if supplied is None:
+        raise AttemptContextError(
+            "campaign-bound workflow requires --campaign-context before dispatch"
+        )
+    if (
+        campaign_context_hash(supplied) != row["context_hash"]
+        or supplied.get("contextHash") != row["context_hash"]
+    ):
+        raise AttemptContextError(
+            "campaign context is missing, modified, or does not match child binding"
+        )
+    try:
+        bound = json.loads(row["context"])
+        expires_at = datetime.fromisoformat(bound["expiresAt"].replace("Z", "+00:00"))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise AttemptContextError("campaign context binding is invalid") from error
+    if datetime.now(UTC) > expires_at:
+        raise AttemptContextError(
+            "campaign context is stale; prepare and bind a fresh context"
+        )
+    revision, content_hash = current_revision_hash(db, workflow_id)
+    child = bound.get("child", {})
+    if (
+        child.get("workflowRevision") != revision
+        or child.get("workflowContentHash") != content_hash
+    ):
+        raise AttemptContextError(
+            "campaign context revision/hash no longer matches child workflow"
+        )
+    return bound
+
+
 def load_spec(path: str) -> dict[str, Any]:
     try:
         spec = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -1772,6 +1863,7 @@ def create_workflow(
     *,
     session_override: str | None = None,
     cwd_override: str | None = None,
+    campaign_context: dict[str, Any] | None = None,
 ) -> str:
     errors = [item for item in validate_spec(spec) if item["severity"] == "error"]
     if errors:
@@ -1899,6 +1991,8 @@ def create_workflow(
             revision = persist_revision(
                 db, workflow_id, spec, rationale="initial creation"
             )
+            if campaign_context is not None:
+                bind_campaign_context(db, workflow_id, campaign_context)
             event(
                 db,
                 workflow_id,
@@ -2795,6 +2889,13 @@ def build_attempt_context(
         }
     except (TypeError, json.JSONDecodeError) as error:
         raise AttemptContextError(f"task {task_id} declarations are invalid") from error
+    campaign_context_row = db.execute(
+        "SELECT context FROM workflow_campaign_contexts WHERE workflow_id=?",
+        (workflow_id,),
+    ).fetchone()
+    campaign_context = (
+        json.loads(campaign_context_row["context"]) if campaign_context_row else None
+    )
     return {
         "workflowId": workflow_id,
         "workflowRevision": revision,
@@ -2808,6 +2909,7 @@ def build_attempt_context(
         "declarations": declarations,
         "handoff": declaration["handoff"],
         "injectedArtifacts": artifacts,
+        "campaignContext": campaign_context,
     }
 
 
@@ -3087,8 +3189,28 @@ def reconcile_workflow(
         refresh(db, workflow_id, fence=fence)
 
 
-def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
+def tick(
+    db: sqlite3.Connection,
+    workflow_id: str,
+    root: Path,
+    campaign_context: dict[str, Any] | None = None,
+) -> None:
     """Schedule under a SQLite lease and launch only durable dispatch intents."""
+    try:
+        validate_bound_campaign_context(db, workflow_id, campaign_context)
+    except AttemptContextError as error:
+        with db:
+            db.execute(
+                "UPDATE workflows SET state='blocked',updated_at=? WHERE id=?",
+                (now(), workflow_id),
+            )
+            event(
+                db,
+                workflow_id,
+                "campaign-context.blocked",
+                detail={"reason": str(error)},
+            )
+        return
     owner = acquire_scheduler_lease(db, workflow_id)
     if owner is None:
         return
@@ -3127,7 +3249,7 @@ def tick(db: sqlite3.Connection, workflow_id: str, root: Path) -> None:
                     (observed, now(), workflow_id),
                 )
                 return
-            if workflow["state"] == "draft":
+            if workflow["state"] in {"draft", "blocked"}:
                 db.execute(
                     "UPDATE workflows SET state='running',updated_at=? WHERE id=?",
                     (now(), workflow_id),
@@ -3506,11 +3628,15 @@ def command_workflow_validate(args: argparse.Namespace) -> None:
 
 def command_workflow_create(args: argparse.Namespace) -> None:
     db = db_connect(args.database)
+    campaign_context = (
+        load_campaign_context(args.campaign_context) if args.campaign_context else None
+    )
     workflow_id = create_workflow(
         db,
         load_spec(args.file),
         session_override=args.tmux_session,
         cwd_override=args.cwd,
+        campaign_context=campaign_context,
     )
     print(workflow_id)
 
@@ -3782,7 +3908,10 @@ def command_workflow_draft(args: argparse.Namespace) -> None:
 
 def command_workflow_tick(args: argparse.Namespace) -> None:
     db = db_connect(args.database)
-    tick(db, args.id, Path(args.root).expanduser())
+    context = (
+        load_campaign_context(args.campaign_context) if args.campaign_context else None
+    )
+    tick(db, args.id, Path(args.root).expanduser(), context)
     print_workflow(db, args.id)
 
 
@@ -4929,6 +5058,155 @@ def observe_campaign_child(
     }
 
 
+def prepare_campaign_child_context(
+    db: sqlite3.Connection,
+    campaign_id: str,
+    phase_id: str,
+    workflow_id: str,
+    workflow_revision: int,
+    workflow_hash: str,
+    artifacts: list[dict[str, Any]],
+    delegation_scope: str,
+    integration_checkpoint: str,
+) -> dict[str, Any]:
+    """Produce a bounded, declarative hand-off; it never creates or starts a child."""
+    if (
+        workflow_revision < 1
+        or not re.fullmatch(r"[0-9a-f]{64}", workflow_hash)
+        or not isinstance(delegation_scope, str)
+        or not delegation_scope.strip()
+        or not isinstance(integration_checkpoint, str)
+        or not integration_checkpoint.strip()
+        or not isinstance(artifacts, list)
+        or len(artifacts) > 16
+    ):
+        fail(
+            "campaign context needs child revision/hash, bounded artifacts, delegation scope, and checkpoint"
+        )
+    revision = campaign_revision(db, campaign_id)
+    plan_row = db.execute(
+        "SELECT plan_hash FROM campaign_revisions WHERE campaign_id=? AND revision=?",
+        (campaign_id, revision),
+    ).fetchone()
+    phase_row = db.execute(
+        "SELECT intent FROM campaign_phases WHERE campaign_id=? AND revision=? AND phase_id=?",
+        (campaign_id, revision, phase_id),
+    ).fetchone()
+    if not plan_row or not phase_row:
+        fail("unknown campaign phase")
+    phases = {
+        row["phase_id"]: json.loads(row["intent"])
+        for row in db.execute(
+            "SELECT phase_id,intent FROM campaign_phases WHERE campaign_id=? AND revision=?",
+            (campaign_id, revision),
+        )
+    }
+    relevant: set[str] = set()
+
+    def include_ancestors(current: str) -> None:
+        for parent in phases[current].get("dependsOn", []):
+            if parent not in phases:
+                fail("campaign phase dependency is invalid")
+            if parent not in relevant:
+                relevant.add(parent)
+                include_ancestors(parent)
+
+    include_ancestors(phase_id)
+    approved_gates: list[dict[str, Any]] = []
+    for relevant_phase in sorted(relevant):
+        for gate in phases[relevant_phase].get("gates", []):
+            gate_id = gate.get("id") if isinstance(gate, dict) else None
+            decision = db.execute(
+                "SELECT decision,actor,rationale FROM campaign_gates WHERE campaign_id=? AND revision=? AND phase_id=? AND gate_id=? ORDER BY id DESC LIMIT 1",
+                (campaign_id, revision, relevant_phase, gate_id),
+            ).fetchone()
+            if not decision or decision["decision"] != "approved":
+                fail(
+                    f"campaign context blocked: gate {relevant_phase}/{gate_id} is not approved"
+                )
+            approved_gates.append(
+                {
+                    "phase": relevant_phase,
+                    "gate": gate_id,
+                    "actor": decision["actor"],
+                    "rationale": decision["rationale"],
+                }
+            )
+    selected: list[dict[str, str]] = []
+    expiry: datetime | None = None
+    for artifact in artifacts:
+        if (
+            not isinstance(artifact, dict)
+            or not all(
+                isinstance(artifact.get(key), str) and artifact[key]
+                for key in ("phase", "workflowId", "reference", "sha256")
+            )
+            or not re.fullmatch(r"[0-9a-f]{64}", artifact.get("sha256", ""))
+        ):
+            fail(
+                "context artifacts need phase, workflowId, relative reference, and sha256"
+            )
+        authority = db.execute(
+            "SELECT * FROM child_authorities WHERE campaign_id=? AND revision=? AND phase_id=? AND workflow_id=? ORDER BY id DESC LIMIT 1",
+            (campaign_id, revision, artifact["phase"], artifact["workflowId"]),
+        ).fetchone()
+        if not authority or authority["status"] != "fresh":
+            fail("context artifact has no fresh observed child authority")
+        try:
+            observed_at = datetime.fromisoformat(
+                authority["observed_at"].replace("Z", "+00:00")
+            )
+        except ValueError as error:
+            raise SystemExit(
+                "context artifact observation timestamp is invalid"
+            ) from error
+        candidate_expiry = observed_at + timedelta(seconds=authority["max_age_seconds"])
+        if datetime.now(UTC) > candidate_expiry:
+            fail("context artifact observation is stale")
+        root = Path(authority["artifact_root"]).expanduser().resolve()
+        artifact_path = (root / artifact["reference"]).resolve()
+        if not artifact_path.is_relative_to(root) or not artifact_path.is_file():
+            fail(
+                "context artifact reference escapes or is absent from declared artifact root"
+            )
+        if hashlib.sha256(artifact_path.read_bytes()).hexdigest() != artifact["sha256"]:
+            fail("context artifact hash does not match declared evidence")
+        expiry = candidate_expiry if expiry is None else min(expiry, candidate_expiry)
+        selected.append(
+            {
+                "phase": artifact["phase"],
+                "workflowId": artifact["workflowId"],
+                "artifactRoot": str(root),
+                "reference": artifact["reference"],
+                "sha256": artifact["sha256"],
+            }
+        )
+    if not selected:
+        fail("campaign context requires at least one declared artifact")
+    assert expiry is not None
+    context: dict[str, Any] = {
+        "schemaVersion": 1,
+        "campaign": {
+            "id": campaign_id,
+            "phase": phase_id,
+            "revision": revision,
+            "planHash": plan_row["plan_hash"],
+        },
+        "child": {
+            "workflowId": workflow_id,
+            "workflowRevision": workflow_revision,
+            "workflowContentHash": workflow_hash,
+        },
+        "approvedGates": approved_gates,
+        "artifacts": selected,
+        "delegationScope": delegation_scope,
+        "integrationCheckpoint": integration_checkpoint,
+        "expiresAt": expiry.astimezone(UTC).isoformat(timespec="seconds"),
+    }
+    context["contextHash"] = campaign_context_hash(context)
+    return context
+
+
 def valid_campaign_delegation(
     raw: str | None, actor: str, action: str, campaign_id: str
 ) -> bool:
@@ -5675,6 +5953,47 @@ def command_campaign_observe(args: argparse.Namespace) -> None:
         db.close()
 
 
+def command_campaign_prepare_context(args: argparse.Namespace) -> None:
+    try:
+        artifacts = json.loads(Path(args.artifacts).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f"cannot read context artifact declarations: {error}")
+    db = campaign_connect(args.ledger)
+    try:
+        context = prepare_campaign_child_context(
+            db,
+            args.id,
+            args.phase,
+            args.workflow,
+            args.workflow_revision,
+            args.workflow_hash,
+            artifacts,
+            args.delegation_scope,
+            args.integration_checkpoint,
+        )
+        output = Path(args.output)
+        if output.exists():
+            fail(
+                "campaign context output already exists; immutable contexts are never overwritten"
+            )
+        write_json(output, context)
+        output.chmod(0o400)
+        campaign_event(
+            db,
+            args.id,
+            "child-context-prepared",
+            f"context:{output}",
+            {
+                "phase": args.phase,
+                "workflow": args.workflow,
+                "contextHash": context["contextHash"],
+            },
+        )
+        print(json.dumps(context, sort_keys=True))
+    finally:
+        db.close()
+
+
 def command_campaign_propose(args: argparse.Namespace) -> None:
     db = campaign_connect(args.ledger)
     try:
@@ -5933,6 +6252,25 @@ def build_parser() -> argparse.ArgumentParser:
     observe.add_argument("--sha256", required=True)
     observe.add_argument("--max-age", type=int, default=300)
     observe.set_defaults(handler=command_campaign_observe)
+    prepare_context = campaign_commands.add_parser(
+        "prepare-child-context",
+        help="prepare immutable declared campaign evidence for an opted-in child",
+    )
+    prepare_context.add_argument("--ledger", required=True)
+    prepare_context.add_argument("id")
+    prepare_context.add_argument("--phase", required=True)
+    prepare_context.add_argument("--workflow", required=True)
+    prepare_context.add_argument("--workflow-revision", type=int, required=True)
+    prepare_context.add_argument("--workflow-hash", required=True)
+    prepare_context.add_argument(
+        "--artifacts",
+        required=True,
+        help="JSON array of selected declared artifact references/hashes",
+    )
+    prepare_context.add_argument("--delegation-scope", required=True)
+    prepare_context.add_argument("--integration-checkpoint", required=True)
+    prepare_context.add_argument("--output", required=True)
+    prepare_context.set_defaults(handler=command_campaign_prepare_context)
     propose = campaign_commands.add_parser(
         "propose-integration", help="record, but do not apply, an integration proposal"
     )
@@ -6065,6 +6403,10 @@ def build_parser() -> argparse.ArgumentParser:
     create.add_argument("--file", required=True)
     create.add_argument("--tmux-session")
     create.add_argument("--cwd")
+    create.add_argument(
+        "--campaign-context",
+        help="immutable context prepared by campaign prepare-child-context",
+    )
     create.set_defaults(handler=command_workflow_create)
     findings = wf.add_parser(
         "findings", help="show validation findings for the current revision"
@@ -6124,6 +6466,9 @@ def build_parser() -> argparse.ArgumentParser:
     ]:
         item = wf.add_parser(name, help=help_text)
         item.add_argument("id")
+        item.add_argument(
+            "--campaign-context", help="required for a campaign-bound child workflow"
+        )
         item.set_defaults(handler=handler)
     status = wf.add_parser("status", help="show workflow board")
     status.add_argument("id")

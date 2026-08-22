@@ -2,7 +2,7 @@
 
 ## Status
 
-**Phase 1 and the display-only overview are implemented:** pure campaign-contract simulation, an explicitly selected separate append-only campaign ledger, and a one-shot `campaign status`/`campaign watch` projection. The overview reads ledger references and child SQLite authority read-only, labels missing/stale/mismatched authority as blocking, and never dispatches, schedules, retries, merges, inspects tmux, copies child runtime records, or claims completion.
+**Phase 1, explicit child context binding, and the display-only overview are implemented:** pure campaign-contract simulation, an explicitly selected separate append-only campaign ledger, immutable opt-in campaign child context preparation/binding, and a one-shot `campaign status`/`campaign watch` projection. The overview reads ledger references and child SQLite authority read-only, labels missing/stale/mismatched authority as blocking, and never dispatches, schedules, retries, merges, inspects tmux, copies child runtime records, or claims completion.
 
 `orchorch` is an experimental, higher-order practice for coordinating multiple durable task-dispatch workflows toward one bounded outcome. Its current runtime is a separate campaign ledger and read-only projections, not a general control plane; child workflow SQLite databases and artifacts remain authoritative.
 
@@ -43,7 +43,7 @@ User approval is the default. The implemented approval check accepts the user di
 design/simulate → scout → strategy → dispatch → integrate → consolidate → harvest/review
 ```
 
-Design is intentionally distinct from dispatch. The ledger records integration evidence after a writer settles, but does not implement campaign advancement or state transitions. Treat `awaiting-integration` and eligibility as review policy: require an approved integration, Git commit, and recorded verification evidence before a human starts a dependent child workflow. Campaign gates are phase-level records; workflow task gates retain their child-workflow readiness meaning.
+Design is intentionally distinct from dispatch. The ledger records integration evidence after a writer settles, but does not implement campaign advancement or state transitions. For an explicitly opted-in child, `prepare-child-context` creates a bounded immutable hand-off of approved ancestor gates and hash-checked selected artifact references. The child stores that binding in its own SQLite authority; creation and start must both name the same context, and missing, stale, modified, or revision/hash-mismatched context blocks worker dispatch. This is evidence binding, not parent scheduling. Treat `awaiting-integration` and eligibility as review policy: require an approved integration, Git commit, and recorded verification evidence before a human starts a dependent child workflow. Campaign gates are phase-level records; workflow task gates retain their child-workflow readiness meaning.
 
 ## Authority and durable state
 

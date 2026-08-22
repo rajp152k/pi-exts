@@ -22,7 +22,12 @@ task-dispatch campaign create --ledger /tmp/campaign-ledger.sqlite --file campai
 task-dispatch campaign inspect --ledger /tmp/campaign-ledger.sqlite release-prep
 task-dispatch campaign gate --ledger /tmp/campaign-ledger.sqlite release-prep --phase prepare --gate strategy-review --decision approved --actor user --rationale reviewed
 task-dispatch campaign observe --ledger /tmp/campaign-ledger.sqlite release-prep --phase prepare --workflow child-id --child-database /path/child.sqlite --artifact-root /path/artifacts --revision 1 --sha256 <revision-hash>
+task-dispatch campaign prepare-child-context --ledger /tmp/campaign-ledger.sqlite release-prep --phase implement --workflow implement-child --workflow-revision 1 --workflow-hash <child-spec-hash> --artifacts selected-artifacts.json --delegation-scope campaign:release-prep/phase:implement --integration-checkpoint prepare-integration --output implement-context.json
+task-dispatch --database /tmp/implement.sqlite workflow create --file workflows/implement.json --campaign-context implement-context.json
+task-dispatch --database /tmp/implement.sqlite workflow start implement-child --campaign-context implement-context.json
 ```
+
+`prepare-child-context` is also explicit: it creates one immutable, bounded JSON hand-off from declared, hash-checked child artifact references and approved ancestor gates. It never creates, starts, schedules, or observes a child. Bind it at child creation and present the identical file at `workflow start`; missing, expired, modified, or child-revision/hash-mismatched context blocks before worker dispatch. The context carries campaign/phase/revision/plan hash, selected artifacts, delegation scope, and integration checkpoint; child SQLite stores only the immutable binding.
 
 `propose-integration`, `approve-integration`, and `record-integration` are separate explicit records. Recording requires a fresh matching child revision/hash, an approved integration gate and proposal, commit/verification evidence, recorder attestation, and authorization. `pause`, `resume`, and `consolidate` only append campaign events/records. Consolidation is deterministic from campaign references and never infers child completion; an optional reviewed input can list only proposed wisdom candidates.
 
