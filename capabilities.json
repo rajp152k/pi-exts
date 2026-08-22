@@ -2,6 +2,11 @@
   "schemaVersion": 1,
   "states": ["implemented", "experimental", "planned", "deprecated"],
   "maturities": ["personal", "supported-local", "experimental"],
+  "operationalAssumptions": {
+    "offlineValidation": "CI runs just check with uv-managed Python. It covers capability metadata and fake-RPC unit tests, not live integrations.",
+    "liveValidation": "Live smoke checks are operator-initiated opt-ins: just test-firefox and TASK_DISPATCH_SMOKE=1 skills/pi-task-dispatch/tests/smoke_real.sh. They are excluded from CI.",
+    "platform": "No broad platform compatibility is claimed. The Firefox launcher defaults to /Applications/Firefox.app/Contents/MacOS/firefox; another local executable requires FIREFOX_BIN. Live checks also require their capability-specific prerequisites."
+  },
   "capabilities": [
     {"id":"notify","state":"implemented","maturity":"personal","owner":"Pi extension","bundle":"notify","resources":["extensions/rp152kpi:notify/index.ts"],"prerequisites":["tmux"],"authority":"tmux popup is attention-only","offlineValidation":"just check","liveValidation":"manual Pi TUI session"},
     {"id":"firefox","state":"implemented","maturity":"personal","owner":"Pi extension + CLI + skill","bundle":"firefox","resources":["extensions/rp152kpi:firefox/index.ts","skills/firefox-browser/SKILL.md"],"prerequisites":["Node 24+","MCPorter","automation-enabled Firefox"],"authority":"firefoxctl controls the external browser boundary","offlineValidation":"just check","liveValidation":"just test-firefox"},

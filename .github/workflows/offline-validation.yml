@@ -1,0 +1,21 @@
+name: Offline validation
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: CI-safe checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081 # v5
+      # taiki-e/install-action@just
+      - uses: taiki-e/install-action@e1ad73d8df9252ed26a05bad034abe5444e7ad28
+      - run: just check

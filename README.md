@@ -78,6 +78,19 @@ just all
 
 `just install <bundle>` and `just all` install `git:github.com/rajp152k/pi-exts`. Named bundle selections are additive; a full-package installation remains unfiltered. Restart Pi after installing or changing loaded resources.
 
+## Validation and operational assumptions
+
+`just check` is the CI-safe root validation entry point. It uses the existing managed `uv` Python workflow for capability metadata and fake-RPC task-dispatch unit tests; it does not start Firefox, Pi, or tmux and does not run live checks.
+
+Live smoke checks are explicit local opt-ins and are excluded from CI:
+
+```bash
+just test-firefox
+TASK_DISPATCH_SMOKE=1 skills/pi-task-dispatch/tests/smoke_real.sh
+```
+
+This package makes no broad runtime or platform compatibility claim. The capability manifest records the bounded assumptions; each live check additionally requires its capability-specific prerequisites.
+
 ## Firefox setup
 
 The Firefox integration requires Node 24+, MCPorter, and an automation-enabled Firefox process. The launcher defaults to `/Applications/Firefox.app/Contents/MacOS/firefox`; set `FIREFOX_BIN` for another Firefox executable:

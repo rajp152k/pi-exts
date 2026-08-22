@@ -25,7 +25,7 @@ update-all:
     pi update --extension "{{repo_source}}"
     python3 scripts/configure-package.py "{{repo_source}}"
 
-# Run offline metadata and task-dispatch checks in a uv-managed Python.
+# Run CI-safe offline validation; excludes live browser, Pi, and tmux checks.
 check:
     uv run --managed-python python scripts/check-capabilities.py
     uv run --managed-python python -m unittest discover -s skills/pi-task-dispatch/tests
