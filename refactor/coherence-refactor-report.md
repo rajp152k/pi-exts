@@ -28,10 +28,11 @@ One authority per concern:
 
 ### Capability and documentation
 
-- `package.json` exposes all resource paths; `resources.json` defines named install bundles; `scripts/configure-package.py` implements selection. The audit found no bundle-path mismatch.
-- The repository advertises four extensions and seven skills, but lacks a canonical capability manifest, maturity/support vocabulary, compatibility table, docs truth table, root validation command, and CI entry point.
-- `docs/README.md` does not link the `orchestrate` and `science` skill contracts; `docs/integrations.md` likewise omits them. Root `README.md` does advertise both.
-- Extension-local TypeScript configs exist, but no root typecheck recipe exists. `tsc` was unavailable in the scout environment.
+These are historical audit findings, not a current capability inventory.
+
+- At audit time, `package.json` exposed all resource paths, `resources.json` defined named install bundles, and `scripts/configure-package.py` implemented selection; no bundle-path mismatch was found.
+- The later Phase 0 work added `capabilities.json`, its generated truth table, and `just check`; use those artifacts rather than this report for current installation, maturity, or validation claims.
+- Documentation links and extension-local TypeScript checks were audit observations, not a substitute for the current package and capability documentation.
 
 ### TUI and attention
 

@@ -4,7 +4,7 @@
 
 **Phase 1 and the display-only overview are implemented:** pure campaign-contract simulation, an explicitly selected separate append-only campaign ledger, and a one-shot `campaign status`/`campaign watch` projection. The overview reads ledger references and child SQLite authority read-only, labels missing/stale/mismatched authority as blocking, and never dispatches, schedules, retries, merges, inspects tmux, copies child runtime records, or claims completion.
 
-`orchorch` is the proposed higher-order orchestration practice and capability for coordinating multiple durable task-dispatch workflows toward one bounded outcome. It is not a general control plane and must preserve child workflow SQLite databases and artifacts as their respective authorities.
+`orchorch` is an experimental, higher-order practice for coordinating multiple durable task-dispatch workflows toward one bounded outcome. Its current runtime is a separate campaign ledger and read-only projections, not a general control plane; child workflow SQLite databases and artifacts remain authoritative.
 
 ## Glossary
 
@@ -35,7 +35,7 @@ Integration follows the approved lifecycle:
 preparer → authority → integrator → recorder
 ```
 
-User approval is the default. For this repository, the user permits the primary assistant to receive explicitly recorded, bounded campaign delegations for **integration approval**. Each operational delegation still names the assistant authority, `integrate` action, campaign/phase/workflow/path scope, expiry, required checks, and revocation condition; it cannot be implicit or re-delegated. Dispatch, recording, and writer retry remain user-controlled unless separately delegated. A writer-retry delegation additionally binds one exact attempt and workflow revision and declares idempotency. Writer patches are never auto-integrated or auto-retried.
+User approval is the default. The implemented approval check accepts the user directly, or an unexpired delegation JSON naming the actor, relevant action, and a scope containing the campaign ID. It does not enforce phase/workflow/path scope, required checks, or revocation conditions; document and review those constraints separately. A `writer-retry` delegation is schema-checked for one attempt, one workflow revision, and `idempotency: true`, but campaign commands never retry work. Writer patches are never auto-integrated or auto-retried.
 
 ## Lifecycle
 
@@ -43,11 +43,11 @@ User approval is the default. For this repository, the user permits the primary 
 design/simulate → scout → strategy → dispatch → integrate → consolidate → harvest/review
 ```
 
-Design is intentionally distinct from dispatch. A campaign cannot advance past a writer workflow merely because a worker settles: it enters `awaiting-integration`. It becomes eligible only after an approved integration, Git commit, and recorded verification evidence. Campaign gates are phase-level advancement/integration decisions; workflow task gates retain their existing child-workflow readiness meaning.
+Design is intentionally distinct from dispatch. The ledger records integration evidence after a writer settles, but does not implement campaign advancement or state transitions. Treat `awaiting-integration` and eligibility as review policy: require an approved integration, Git commit, and recorded verification evidence before a human starts a dependent child workflow. Campaign gates are phase-level records; workflow task gates retain their child-workflow readiness meaning.
 
 ## Authority and durable state
 
-A future campaign registry may persist campaign intent, immutable revisions, phase/workflow references, approvals, integration commits, and campaign events. It must not replace child workflow authority:
+The implemented campaign ledger persists campaign intent, immutable revisions, phase/workflow references, approvals, integration commits, and campaign events. It does not replace child workflow authority:
 
 | Concern | Authority |
 | --- | --- |
@@ -59,25 +59,9 @@ A future campaign registry may persist campaign intent, immutable revisions, pha
 
 Missing, stale, or ambiguous child state blocks the campaign; no UI/pane output may imply completion.
 
-## Model policy
+## Route-preflight pilot
 
-Campaign configuration names roles rather than hard-coding a provider:
-
-```json
-{
-  "models": {
-    "campaign": {"model": "gpt-5.6-sol", "thinking": "adaptive"},
-    "commander": {"model": "gpt-5.6-terra", "thinking": "adaptive"},
-    "executor": {"model": "gpt-5.6-luna", "thinking": "adaptive"}
-  }
-}
-```
-
-- Campaign role: scout synthesis, strategy, cross-workflow risk analysis, consolidation.
-- Commander role: workflow decomposition, gate checking, evidence review, and integration coordination.
-- Executor role: bounded research, implementation, and verification tasks.
-
-Dispatch validates that configured models and thinking modes are available. Adaptive thinking is bounded by campaign policy. Model escalation, a consequential model switch, or a writer retry is recorded; it is never silent. Select roles by ambiguity, coordination cost, and risk—not model prestige.
+Campaigns do not dispatch or select models. `campaign route-preflight` records an operator-supplied task locator, one explicit provider-qualified `{provider, model, thinking}` route, availability list, cost, latency, escalation source, and outcome. It fails closed when that exact route is absent and never substitutes or invokes a model. Treat any role policy as planning guidance until a separately reviewed runtime implements it.
 
 ## Scout and strategy requirements
 
@@ -126,13 +110,13 @@ The initial skill is `skills/orchorch/SKILL.md`, invoked as `/skill:orchorch`. A
 - Attention events are actionable, bounded, and source-linked.
 - Wisdom retrieval is scoped, attributable, and non-binding unless a reviewed policy applies.
 
-## Approved completion plan
+## Implementation notes and remaining boundaries
 
-The simulation contract is implemented. The remaining work is deliberately sequential: campaign runtime code and its tests share the task-dispatch boundary, and each writer change requires an explicit integration checkpoint before the next phase starts.
+The simulation contract, separate ledger, explicit records, and display-only overview are implemented. They remain intentionally narrow and do not schedule child workflows.
 
-### 1. Persistent campaign ledger
+### 1. Persistent campaign ledger — implemented
 
-Implement a separate, explicitly selected SQLite ledger (never the default child-workflow database). It is an append-only record of campaign actions over time, not a second scheduler.
+The separate, explicitly selected SQLite ledger is never the default child-workflow database. It is an append-only record of campaign actions over time, not a second scheduler.
 
 It persists only:
 
@@ -144,19 +128,19 @@ It persists only:
 
 It must not copy child task/attempt state, reports, raw events, leases, retries, Git working-tree state, or tmux-derived completion. Child observations are refreshed from their authority and fail closed when missing, stale, or revision-mismatched.
 
-The ledger state model is:
+The intended review lifecycle is:
 
 ```text
 draft → approved → running → awaiting-integration → blocked | completed | cancelled
 ```
 
-`awaiting-integration` is entered after a writer child reaches its authoritative terminal result. It may advance only after a valid integration record identifies base SHA, resulting commit SHA, verification references/hashes/results, owner/integrator, authority approval, and timestamp.
+It is not a ledger state machine. The ledger can record the evidence needed for a reviewer to apply that lifecycle: child observations, gate/proposal approvals, resulting commit SHA, verification evidence, recorder attestation, and timestamps.
 
-### 2. Campaign execution commands
+### 2. Campaign ledger commands — implemented
 
-Add narrow explicit commands to create, inspect, approve/reject gates, observe child authority, propose/approve/apply/record integration, pause/resume, and consolidate a campaign. No command may auto-dispatch a child, auto-integrate, auto-merge, auto-retry, or infer completion from tmux. Child workflow start remains an explicit, recorded protected action.
+The ledger provides narrow explicit commands to create, inspect, approve/reject gates, observe child authority, propose/approve/record integration, pause/resume, and consolidate a campaign. No command auto-dispatches a child, integrates, merges, retries, or infers completion from tmux. Child workflow start remains outside campaign commands.
 
-Default authority is the user. The user permits campaign-specific, explicitly recorded delegation of `integrate` approval to the primary assistant for this repository. Every such delegation must name the assistant authority, bounded campaign/phase/workflow/path scope, expiry, required checks, and revocation condition; it is not transitive. Dispatch, recording, and writer retry remain user-controlled unless separately delegated. Delegated writer retries additionally require the exact failed attempt, pinned revision, and declared idempotency.
+Default authority is the user. A non-user integration or recording actor must supply a delegation recognized by the runtime: a user grant naming the actor, relevant action, scope containing the campaign ID, and unexpired expiry. It is authorization evidence, not an action; it cannot dispatch, integrate, record, or retry on its own. Operational path scope, checks, and revocation conditions must be recorded and reviewed outside the current runtime check. A `writer-retry` delegation is additionally schema-checked for the exact attempt, pinned revision, and `idempotency: true`, but campaign commands never retry work.
 
 ### 3. Display-only campaign overview — implemented
 

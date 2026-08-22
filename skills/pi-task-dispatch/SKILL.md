@@ -91,7 +91,7 @@ Findings are JSON with severity, task IDs, affected edges where relevant, and re
 
 Use the refinement loop: resolve findings the agent can establish safely; ask a focused human question when scope, authorization, ownership, or another unsafe ambiguity remains; then rerun the complete validation set. Do not dispatch with errors; review warnings before dispatch.
 
-> **Current limit:** recorded warning overrides, persisted refinement rounds/human answers, and a first-class `refining` state are still pending.
+`workflow refine` records a `refining` state and reports current findings. Warning overrides and persisted refinement-round or human-answer records remain unavailable; resolve ambiguity in the reviewed spec and handoff.
 
 Attempts pin an immutable workflow revision hash and task snapshot. A revision change invalidates completed dependency reports, so they are never injected across revisions. No-progress policy advances only from a new valid RPC event or worker heartbeat, never from polling or tmux liveness. A default-tools retry requires declared `idempotency: true` and a durable approval tied to the failed attempt and its pinned revision. The scheduler observes `maxConcurrency` and resource leases. `read:<name>` leases are shared; `write:<name>` leases are exclusive against reads and writes. Untagged legacy resources (including `worktree:<name>`) remain exclusive. A task cannot declare both read and write for one name; every default-tools task needs a `worktree:<name>` resource. Cancellation is explicit:
 

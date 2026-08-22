@@ -24,7 +24,7 @@ task-dispatch campaign gate --ledger /tmp/campaign-ledger.sqlite release-prep --
 task-dispatch campaign observe --ledger /tmp/campaign-ledger.sqlite release-prep --phase prepare --workflow child-id --child-database /path/child.sqlite --artifact-root /path/artifacts --revision 1 --sha256 <revision-hash>
 ```
 
-`propose-integration`, `approve-integration`, and `record-integration` are separate explicit records. Recording requires a fresh matching child revision/hash, an approved integration gate and proposal, complete commit/verification evidence, and user (or unexpired bounded) authority. `pause`, `resume`, and `consolidate` only append campaign events/records. Consolidation is deterministic from campaign references and never infers child completion; an optional reviewed input can list only proposed wisdom candidates.
+`propose-integration`, `approve-integration`, and `record-integration` are separate explicit records. Recording requires a fresh matching child revision/hash, an approved integration gate and proposal, commit/verification evidence, recorder attestation, and authorization. `pause`, `resume`, and `consolidate` only append campaign events/records. Consolidation is deterministic from campaign references and never infers child completion; an optional reviewed input can list only proposed wisdom candidates.
 
 ## Measured, constrained pilots
 
@@ -104,10 +104,10 @@ writer settled → awaiting-integration → approved integration
 → Git commit plus verification evidence recorded → eligible
 ```
 
-The user is the default authority. For this repository, the user permits the primary assistant to receive campaign-specific, explicitly recorded `integrate` approval delegations. A delegation is valid only when it explicitly has `grantedBy: "user"`, named `authority`, non-empty `actions`, bounded `scope`, ISO-8601 `expiresAt`, required checks, and a revocation condition. It cannot be implicit or re-delegated. Dispatch, recording, and writer retry remain user-controlled unless separately delegated. The only delegation actions are `dispatch`, `integrate`, `record`, and `writer-retry`.
+The user is the default authority. A non-user integration or recording actor must supply delegation JSON with `grantedBy: "user"`, matching `authority`, the relevant action, a scope containing the campaign ID, and an unexpired ISO-8601 `expiresAt`. This runtime check does not interpret path scope, required checks, or revocation conditions; keep those constraints explicit and review them before acting. Delegation records authorization only: they never dispatch, retry, integrate, or record by themselves. The only delegation actions are `dispatch`, `integrate`, `record`, and `writer-retry`.
 
 A `writer-retry` delegation is additionally bound to one `attemptId`, one positive `workflowRevision`, and `idempotency: true`. Declaring a delegation does not execute it. There is no auto-integration and no retry behavior in this slice.
 
-The projection contains predicted phases, computed and declared child hashes, child validation findings, and user-required gate approvals. A nonzero exit means any error finding exists; child-workflow warnings remain visible.
+Simulation emits predicted phases, computed and declared child hashes, child validation findings, and required gate approvals. A nonzero exit means an error finding exists; child-workflow warnings remain visible.
 
 Do not add scheduling, dispatch operations, retries, integration actions, pane-derived completion, attention delivery, wisdom retrieval, model routing, extension aliases, or auto-integration to the display-only overview. The pilots above are explicit ledger commands, not overview behavior.

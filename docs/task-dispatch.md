@@ -101,7 +101,7 @@ The command prints JSON findings with severity, task IDs, affected edges where r
 
 Use the refinement loop: validate; resolve agent-safe findings in the spec; ask a focused human question for scope, ownership, authorization, or other unsafe ambiguity; then rerun the complete validation set. Do not dispatch with errors. Review warnings before dispatch.
 
-> **Current limit:** recorded warning overrides, persisted refinement rounds/human answers, and a first-class `refining` state are not implemented yet.
+`workflow refine` records a `refining` state and reports current findings. Warning overrides and persisted refinement-round or human-answer records are not implemented; resolve ambiguity in the reviewed spec and its handoff.
 
 ## Graph and scheduling rules
 
@@ -168,7 +168,7 @@ task-dispatch campaign create --ledger /tmp/release-ledger.sqlite --file campaig
 task-dispatch campaign inspect --ledger /tmp/release-ledger.sqlite release-prep
 ```
 
-Use explicit `campaign gate`, `observe`, `propose-integration`, `approve-integration`, `record-integration`, `pause`, `resume`, and `consolidate` operations. Observation opens the named child SQLite authority read-only and fails closed for missing or revision/hash-mismatched authority. Recording integration requires fresh matching authority, approved phase/proposal decisions, complete Git commit and verification evidence, recorder attestation, and user or bounded delegated authority. For this repository, the user permits a campaign-specific, explicitly recorded delegation of `integrate` approval to the primary assistant; it must still state scope, expiry, required checks, and revocation condition. Dispatch, recording, and writer retry remain user-controlled unless separately delegated. These commands never start a child workflow, retry work, merge/apply a patch, infer state from tmux, or copy child runtime records.
+Use explicit `campaign gate`, `observe`, `propose-integration`, `approve-integration`, `record-integration`, `pause`, `resume`, and `consolidate` operations. Observation opens the named child SQLite authority read-only and fails closed for missing or revision/hash-mismatched authority. Recording integration requires fresh matching authority, approved phase/proposal decisions, commit and verification evidence, recorder attestation, and authorization. The runtime accepts the user directly, or an unexpired delegation JSON whose named authority has the relevant action and a scope containing the campaign ID. It does not validate path scope, required checks, or revocation conditions; record and review those operational constraints separately. These commands never start a child workflow, retry work, merge/apply a patch, infer state from tmux, or copy child runtime records.
 
 ### Display-only campaign overview
 
@@ -188,7 +188,7 @@ The overview reads the ledger plus its child authority locators without writing 
 
 `campaign attention record` is opt-in and records only actionable `decision`, `approval`, `integration`, `blocked`, or `incident` events with authority, impact, options, recommendation, confidence, and source. Its deterministic fingerprint coalesces an open duplicate; `attention resolve` closes that lifecycle. It sends no popup and must not be used for routine settled information.
 
-`campaign route-preflight` compares one explicit `{provider, model, thinking}` JSON route to an operator-supplied availability JSON list. It fails closed when the exact provider-qualified model/thinking combination is unavailable and never substitutes, routes, or dispatches a model. A successful explicit invocation records task locator, selected route, escalation source, cost, latency, and supplied outcome for later baseline comparison.
+`campaign route-preflight` compares one explicit `{provider, model, thinking}` JSON route to an operator-supplied availability JSON list. It fails closed when the exact provider-qualified model/thinking combination is unavailable and never substitutes or dispatches a model. A successful invocation records the supplied task locator, route, escalation source, cost, latency, and outcome for later comparison.
 
 ## Opt-in real smoke test
 

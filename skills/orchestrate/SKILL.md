@@ -26,7 +26,7 @@ Before creating a graph, establish:
 5. the required handoff: status, decisions, files changed or `read-only`, commands/tests, risks/open questions, and next action;
 6. bounded observation cadence and maximum duration, ending in a terminal-state progress report.
 
-For an end-to-end orchestration request, remain in the execution loop after dispatch: do not settle or ask for unrelated input while any task is nonterminal. Observe at the declared cadence until terminal, then consolidate the authoritative workflow/task/attempt state and report progress, evidence, failures, and the next action. If the declared maximum duration expires, report the still-active state and continue only with the user's direction; never imply completion from pane text.
+For an end-to-end orchestration request, remain in the execution loop after dispatch: do not send a normal response, settle, or ask for unrelated input while any task is nonterminal. Immediately after `workflow start`, open the mandatory board and begin bounded authoritative status monitoring in the same turn. Observe at the declared cadence until a final `status --refresh` confirms terminal state; then consolidate the authoritative workflow/task/attempt state and report progress, evidence, failures, and the next action. If the declared maximum duration expires, report the still-active state and continue only with the user's direction; never imply completion from pane text.
 
 ### Session affinity
 

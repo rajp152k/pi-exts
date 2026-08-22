@@ -8,11 +8,12 @@ The root `package.json` exposes all `extensions/*/index.ts` files and `skills/*/
 | --- | --- |
 | `notify` | `rp152kpi:notify` extension |
 | `firefox` | `rp152kpi:firefox` extension and `firefox-browser` skill |
-| `tmux` | `tmux-control`, `pi-task-dispatch`, and `orchestrate` skills |
+| `tmux` | `tmux-control`, `pi-task-dispatch`, `orchestrate`, and `orchorch` skills |
 | `modelling` | `modelling` skill |
 | `science` | `science` skill |
 | `traces` | `rp152kpi:traces` extension and `pi-traces` skill |
 | `tangent` | `rp152kpi:tangent` extension |
+| `work-state` | `rp152kpi:work-state` extension and `work-state` skill |
 
 Named installs are additive: the configuration script preserves already selected resources for the same package source.
 
@@ -28,6 +29,7 @@ just install modelling
 just install science
 just install traces
 just install tangent
+just install work-state
 just all
 ```
 
@@ -51,7 +53,7 @@ just update notify
 just update-all
 ```
 
-The named update refreshes the Git package then reapplies its resource filter. The all update enables all resources.
+The named update refreshes the Git package then reapplies its resource filter. The all update enables all resources. `just check` is the CI-safe validation entry point; it excludes live Firefox, Pi, and tmux checks.
 
 ## How configuration works
 

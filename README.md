@@ -21,12 +21,12 @@ Personal Pi extensions, organized under the `rp152kpi:<name>` namespace.
 - [`tmux-control`](skills/tmux-control): directs Pi to safely inspect and control local tmux sessions through the tmux CLI.
 - [`pi-task-dispatch`](skills/pi-task-dispatch): dispatches and monitors tmux-backed Pi workers, with SQLite-persisted dependency workflows, event observability, and a live board/Gantt watch.
 - [`orchestrate`](skills/orchestrate): turns a goal and discovery todo corpus into a reviewed, safely parallel task-dispatch graph and observable execution.
-- [`orchorch`](skills/orchorch): designs/simulates bounded multi-workflow campaigns and provides explicitly selected ledger pilots for consolidation, reviewed wisdom, calm attention records, and fail-closed route preflight; it never dispatches from these commands.
+- [`orchorch`](skills/orchorch): validates bounded multi-workflow campaign plans and records explicit campaign-ledger decisions, observations, and constrained pilots; it never dispatches, integrates, retries, or controls child workflows.
 - [`modelling`](skills/modelling): turns a context into a bounded, decision-relevant model specification with explicit uncertainty and validation.
 - [`science`](skills/science): applies scientific-method thinking to critically question claims, learning, and software.
 - [`rp152kpi:traces`](extensions/rp152kpi:traces): lists or searches local traces and loads trace IDs or traces.com links through the `traces` CLI.
 - [`rp152kpi:tangent`](extensions/rp152kpi:tangent): opens an isolated Pi tangent in tmux and can catch up from its latest recorded response.
-- [`rp152kpi:work-state`](extensions/rp152kpi:work-state): explicitly snapshots bounded Git, workflow SQLite, tmux topology, and local trace-index state without controlling workflows or inferring completion from UI state.
+- [`rp152kpi:work-state`](extensions/rp152kpi:work-state): on explicit request, snapshots bounded Git, workflow SQLite, tmux topology, and local trace-index state without controlling workflows or inferring completion from UI state.
 
 ## Install
 
@@ -88,7 +88,7 @@ just all
 
 ## Validation and operational assumptions
 
-`just check` is the CI-safe root validation entry point. It uses the existing managed `uv` Python workflow for capability metadata and fake-RPC task-dispatch unit tests; it does not start Firefox, Pi, or tmux and does not run live checks.
+`just check` is the CI-safe root validation entry point. It runs the capability-metadata check and fake-RPC task-dispatch unit tests in the locked, managed `uv` environment; it does not start Firefox, Pi, or tmux and does not run live checks.
 
 Live smoke checks are explicit local opt-ins and are excluded from CI:
 

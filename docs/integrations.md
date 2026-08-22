@@ -4,7 +4,7 @@ Install bundles using the [package guide](package-guide.md). Restart Pi after in
 
 ## Notify
 
-`rp152kpi:notify` provides only the explicit `/notify-test` tmux popup. It does not alert on routine agent settlement, so it cannot steal focus. The popup identifies the current tmux session, window index, and window name, and requires tmux 3.2 or newer plus Pi TUI mode in a tmux pane. Campaign attention is a separate opt-in ledger pilot: it records actionable, source-linked events but sends no global popup. See its [extension README](../extensions/rp152kpi:notify/README.md).
+`rp152kpi:notify` shows a dismissible tmux popup when Pi settles; `/notify-test` triggers the same popup explicitly. It identifies the current tmux session, window index, and window name, and requires tmux 3.2 or newer plus Pi TUI mode in a tmux pane. It is an attention cue, never workflow authority. Campaign attention is a separate opt-in ledger pilot: it records actionable, source-linked events but sends no global popup. See its [extension README](../extensions/rp152kpi:notify/README.md).
 
 ## Traces
 
@@ -41,7 +41,7 @@ See the dedicated [workflow guide](task-dispatch.md). Launch `workflow watch` im
 
 ## Orchorch
 
-`/skill:orchorch` designs and validates a versioned campaign JSON plan before any runtime action. `campaign simulate` remains side-effect free. An explicitly selected campaign ledger can record deterministic consolidation reports; Git-versioned, human-reviewed wisdom records with scoped tag retrieval; opt-in deduplicated actionable attention records; and provider-qualified model-route preflight observations. These are local, measured pilots: no service, RAG, automatic promotion/enforcement, global alert UI, model substitution, or model dispatch. See [the skill](../skills/orchorch/SKILL.md).
+`/skill:orchorch` validates a versioned campaign plan; `campaign simulate` is side-effect free. Explicit ledger commands record campaign decisions, read-only child-authority observations, integration evidence, and deterministic consolidation. Constrained wisdom, attention, and route-preflight pilots record only explicit local inputs. The ledger is separate from child workflow SQLite and never dispatches, schedules, retries, merges, controls models, or infers completion from tmux. See [the skill](../skills/orchorch/SKILL.md).
 
 ## Modelling
 
