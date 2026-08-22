@@ -1,0 +1,5 @@
+{
+  "git": "## feature/work-state...origin/feature/work-state\n M README.md\n?? skills/work-state/SKILL.md\n",
+  "tmux": "main\t1.0\t%1\t1\tpi\t/tmp/project\nworkflow\t2.1\t%2\t0\tpython\t/tmp/worker\n",
+  "traces": "trace-a recent local trace\ntrace-b older local trace\n"
+}

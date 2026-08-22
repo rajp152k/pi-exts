@@ -25,6 +25,7 @@ Personal Pi extensions, organized under the `rp152kpi:<name>` namespace.
 - [`science`](skills/science): applies scientific-method thinking to critically question claims, learning, and software.
 - [`rp152kpi:traces`](extensions/rp152kpi:traces): lists or searches local traces and loads trace IDs or traces.com links through the `traces` CLI.
 - [`rp152kpi:tangent`](extensions/rp152kpi:tangent): opens an isolated Pi tangent in tmux and can catch up from its latest recorded response.
+- [`rp152kpi:work-state`](extensions/rp152kpi:work-state): explicitly snapshots bounded Git, workflow SQLite, tmux topology, and local trace-index state without controlling workflows or inferring completion from UI state.
 
 ## Install
 
@@ -68,6 +69,12 @@ Install the tangent extension:
 
 ```bash
 just install tangent
+```
+
+Install the read-only work-state extension and skill:
+
+```bash
+just install work-state
 ```
 
 Install every extension and skill:

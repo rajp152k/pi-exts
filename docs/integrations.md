@@ -15,6 +15,12 @@ Install bundles using the [package guide](package-guide.md). Restart Pi after in
 - Successful CLI stdout is head-truncated at Pi's standard 2,000-line/50KB limit; a short notice is appended when material is omitted. Do not infer omitted material from truncation.
 - See its [extension README](../extensions/rp152kpi:traces/README.md).
 
+## Work state
+
+`rp152kpi:work-state` exposes a read-only `work_state` tool only for explicit work-state, workflow-context, or attention-guidance requests. It reports bounded Git state, persisted workflow SQLite records, tmux topology, and locally indexed recent traces; each source labels its freshness, authority, boundedness, and availability.
+
+It captures neither tmux pane scrollback nor trace bodies. tmux is topology only and cannot establish workflow completion. The tool does not dispatch/control workflows or create background alerts. Firefox is excluded unless `includeFirefox: true`, which obtains only `firefoxctl daemon status` metadata and never starts Firefox or reads browser DOM/content. Missing Git, SQLite, tmux, traces, or Firefox dependencies are reported as unavailable sources. See its [extension README](../extensions/rp152kpi:work-state/README.md) and [skill](../skills/work-state/SKILL.md).
+
 ## Tangent
 
 `rp152kpi:tangent` adds `/tangent <query>`, which starts an isolated Pi process in a new tmux window with the current working directory, model, thinking level, query, and up to two recent visible assistant text responses. Outside tmux, it starts a detached `tangent-…` session and reports the attach command.

@@ -13,5 +13,6 @@ This generated table is checked by `just check`. `capabilities.json` is the capa
 | science | implemented | personal | skill | science | Pi | `just check` | `manual Pi session` |
 | traces | implemented | personal | Pi extension + skill | traces | traces CLI | `just check` | `manual trace query` |
 | tangent | implemented | experimental | Pi extension | tangent | tmux; Pi | `just check` | `manual tangent session` |
+| work-state | implemented | personal | Pi extension + skill | work-state | Pi; optional Git, Python SQLite, tmux, traces CLI, and firefoxctl | `fixture-only Node tests, TypeScript check, and just check` | `manual explicit work_state request` |
 
 State is the user-facing truth claim. Maturity describes support posture: `personal` is maintained for this collection, `supported-local` has a local compatibility commitment, and `experimental` may change without compatibility guarantees.

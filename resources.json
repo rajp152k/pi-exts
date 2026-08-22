@@ -25,5 +25,9 @@
   },
   "tangent": {
     "extensions": ["extensions/rp152kpi:tangent/index.ts"]
+  },
+  "work-state": {
+    "extensions": ["extensions/rp152kpi:work-state/index.ts"],
+    "skills": ["skills/work-state/SKILL.md"]
   }
 }
