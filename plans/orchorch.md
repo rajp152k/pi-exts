@@ -116,7 +116,7 @@ Scouts retrieve only relevant entries. Commanders record overrides. Executors re
 
 The initial skill should be `skills/orchorch/SKILL.md`, invoked as `/skill:orchorch`. A plain `/orchorch` alias requires a separate Pi extension and is deferred. A future `campaign watch` overview is display-first; actions remain explicit CLI operations. It shows phase/workflow desired and observed state, freshness, child board/artifact links, gates, integration commits, and next action.
 
-## Acceptance criteria before implementation
+## Non-negotiable constraints
 
 - Child SQLite/artifacts remain authoritative and replayable.
 - Every child spec is reviewed/validated before campaign dispatch.
@@ -125,3 +125,63 @@ The initial skill should be `skills/orchorch/SKILL.md`, invoked as `/skill:orcho
 - The overview cannot infer completion from panes.
 - Attention events are actionable, bounded, and source-linked.
 - Wisdom retrieval is scoped, attributable, and non-binding unless a reviewed policy applies.
+
+## Approved completion plan
+
+The simulation contract is implemented. The remaining work is deliberately sequential: campaign runtime code and its tests share the task-dispatch boundary, and each writer change requires an explicit integration checkpoint before the next phase starts.
+
+### 1. Persistent campaign ledger
+
+Implement a separate, explicitly selected SQLite ledger (never the default child-workflow database). It is an append-only record of campaign actions over time, not a second scheduler.
+
+It persists only:
+
+- immutable campaign revisions and canonical plan hashes;
+- phase intent and gate/approval decisions;
+- child workflow locators (workflow ID, database/root path, spec/revision/hash) and observation timestamps;
+- integration proposals, approvals, applied commits, verification evidence, and recorder attestations;
+- source-linked campaign events and terminal consolidation records.
+
+It must not copy child task/attempt state, reports, raw events, leases, retries, Git working-tree state, or tmux-derived completion. Child observations are refreshed from their authority and fail closed when missing, stale, or revision-mismatched.
+
+The ledger state model is:
+
+```text
+draft → approved → running → awaiting-integration → blocked | completed | cancelled
+```
+
+`awaiting-integration` is entered after a writer child reaches its authoritative terminal result. It may advance only after a valid integration record identifies base SHA, resulting commit SHA, verification references/hashes/results, owner/integrator, authority approval, and timestamp.
+
+### 2. Campaign execution commands
+
+Add narrow explicit commands to create, inspect, approve/reject gates, observe child authority, propose/approve/apply/record integration, pause/resume, and consolidate a campaign. No command may auto-dispatch a child, auto-integrate, auto-merge, auto-retry, or infer completion from tmux. Child workflow start remains an explicit, recorded protected action.
+
+Default authority is the user. Delegation is valid only when it names an authority, allowed actions, bounded campaign/phase/workflow/path scope, expiry, required checks, and revocation condition. It is not transitive. Delegated writer retries additionally require the exact failed attempt, pinned revision, and declared idempotency.
+
+### 3. Display-only campaign overview
+
+After ledger authority is proven, add `campaign watch`: a display-first TUI showing campaign phase desired/observed state, freshness, child board/artifact links, gates, integration state/commit, incidents, and next action. It reads the ledger and child authorities; it cannot schedule, retry, integrate, or make a completion claim.
+
+### 4. Campaign consolidation
+
+Implement a deterministic terminal consolidation record/report with outcome, planned-versus-observed phase progress, authority-linked evidence, incidents and dispositions, decisions still required, opportunities, measured delivery metrics, and recommended next campaign. Consolidation may harvest wisdom candidates but cannot promote them.
+
+### 5. Wisdom-set pilot
+
+Start with Git-versioned, human-reviewable records and deterministic scoped tag retrieval. Add policy/scroll/precedent lifecycle, provenance, expiry, supersession, application/override ledger, and review gates. Do not add a centralized service, embeddings/RAG, automatic extraction, autonomous promotion, or policy enforcement until measured retrieval failures justify it.
+
+### 6. Attention and routing pilots
+
+Only after ledger/overview events are authoritative, pilot opt-in calm attention: deduplicated `decision`, `approval`, `integration`, `blocked`, and `incident` events with source links and resolution lifecycle. Replace routine settled popups only after measuring missed decisions, blocked time, action rate, coalescing, dismissal, and staleness.
+
+Treat adaptive model selection as a policy resolver from task/campaign difficulty to a preflight-validated provider-qualified model and explicit thinking level. Establish baseline routes first; record every selection/escalation, cost, latency, quality, and failure. Do not silently substitute unavailable models or adopt routing without evidence against the baseline.
+
+## Completion criteria
+
+Orchorch is complete only when all of the following are true:
+
+1. Simulation, ledger, command boundaries, and overview have deterministic tests proving no duplicate/split authority or forbidden side effects.
+2. Every campaign action is replayable from immutable revisions, ledger events, child authority references, integration commits, and evidence hashes.
+3. Integration cannot be bypassed and delegation is bounded, auditable, and revocable.
+4. Consolidation reports expose evidence, incidents, opportunities, and attention requiring user action.
+5. Wisdom, attention, and routing remain measured pilots with explicit defer/remove criteria rather than assumed permanent infrastructure.
