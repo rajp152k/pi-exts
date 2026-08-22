@@ -5,6 +5,8 @@ description: Design and simulate a bounded, reviewable multi-workflow campaign w
 
 # Orchorch
 
+For operating heuristics rather than command reference, see [usage guides](usage/README.md).
+
 Use `/skill:orchorch` to design a campaign before any child workflow is created or dispatched:
 
 ```bash
